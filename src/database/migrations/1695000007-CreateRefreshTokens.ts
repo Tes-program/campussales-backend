@@ -1,4 +1,9 @@
-import { MigrationInterface, QueryRunner, Table, ForeignKey } from 'typeorm';
+import {
+  MigrationInterface,
+  QueryRunner,
+  Table,
+  TableForeignKey,
+} from 'typeorm';
 
 export class CreateRefreshTokens1695000007 implements MigrationInterface {
   public async up(queryRunner: QueryRunner): Promise<void> {
@@ -46,7 +51,7 @@ export class CreateRefreshTokens1695000007 implements MigrationInterface {
     // Add foreign key constraint
     await queryRunner.createForeignKey(
       'refresh_tokens',
-      new ForeignKey({
+      new TableForeignKey({
         columnNames: ['userId'],
         referencedColumnNames: ['id'],
         referencedTableName: 'users',

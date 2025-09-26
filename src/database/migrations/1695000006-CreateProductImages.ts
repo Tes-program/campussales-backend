@@ -1,4 +1,9 @@
-import { MigrationInterface, QueryRunner, Table, ForeignKey } from 'typeorm';
+import {
+  MigrationInterface,
+  QueryRunner,
+  Table,
+  TableForeignKey,
+} from 'typeorm';
 
 export class CreateProductImages1695000006 implements MigrationInterface {
   public async up(queryRunner: QueryRunner): Promise<void> {
@@ -46,7 +51,7 @@ export class CreateProductImages1695000006 implements MigrationInterface {
     // Add foreign key constraint
     await queryRunner.createForeignKey(
       'product_images',
-      new ForeignKey({
+      new TableForeignKey({
         columnNames: ['productId'],
         referencedColumnNames: ['id'],
         referencedTableName: 'products',
