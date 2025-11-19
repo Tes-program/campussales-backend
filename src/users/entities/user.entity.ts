@@ -1,3 +1,4 @@
+// src/users/entities/user.entity.ts
 import {
   Entity,
   PrimaryGeneratedColumn,
@@ -10,8 +11,7 @@ import {
 import { Exclude } from 'class-transformer';
 import { UserProfile } from './user-profile.entity';
 import { Product } from '../../products/entities/product.entity';
-// import { Message } from '../../messages/entities/message.entity';
-// import { Wishlist } from '../../products/entities/wishlist.entity';
+import { Wishlist } from '../../wishlist/entities/wishlist.entity'; // Add this import
 import { UserType, UserStatus } from '../../common/enum/user.enums';
 
 @Entity('users')
@@ -62,9 +62,6 @@ export class User {
   @OneToMany(() => Product, (product) => product.seller)
   products: Product[];
 
-  //   @OneToMany(() => Message, (message) => message.sender)
-  //   messages: Message[];
-
-  //   @OneToMany(() => Wishlist, (wishlist) => wishlist.user)
-  //   wishlists: Wishlist[];
+  @OneToMany(() => Wishlist, (wishlist) => wishlist.user) // Add this relation
+  wishlists: Wishlist[];
 }

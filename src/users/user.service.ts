@@ -11,6 +11,8 @@ import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
 import { UserType, UserStatus } from '../common/enum/user.enums';
 import * as bcrypt from 'bcryptjs';
+import { OnboardingStatusDto } from './dto/check-status-onboarding.dto';
+import { CompleteOnboardingDto } from './dto/onboarding.dto';
 
 @Injectable()
 export class UsersService {
@@ -185,6 +187,153 @@ export class UsersService {
     const user = await this.findByIdOrFail(id);
     user.isVerified = true;
     return await this.usersRepository.save(user);
+  }
+
+  // Add these methods to src/users/user.service.ts
+
+  /**
+   * Complete user onboarding
+   */
+  async completeOnboarding(
+    userId: string,
+    onboardingDto: CompleteOnboardingDto,
+  ): Promise<User> {
+    const user = await this.findByIdOrFail(userId);
+
+    // Check if profile exists
+    let profile = await this.userProfileRepository.findOne({
+      where: { userId },
+    });
+
+    if (profile) {
+      // Update existing profile
+      Object.assign(profile, {
+        firstName: onboardingDto.firstName,
+        lastName: onboardingDto.lastName,
+        universityId: onboardingDto.universityId,
+        department: onboardingDto.department,
+        studentLevel: onboardingDto.studentLevel,
+        dateOfBirth: onboardingDto.dateOfBirth,
+        bio: onboardingDto.bio,
+        profilePictureUrl: onboardingDto.profilePictureUrl,
+      });
+      await this.userProfileRepository.save(profile);
+    } else {
+      // Create new profile
+      profile = this.userProfileRepository.create({
+        userId,
+        firstName: onboardingDto.firstName,
+        lastName: onboardingDto.lastName,
+        universityId: onboardingDto.universityId,
+        department: onboardingDto.department,
+        studentLevel: onboardingDto.studentLevel,
+        dateOfBirth: onboardingDto.dateOfBirth,
+        bio: onboardingDto.bio,
+        profilePictureUrl: onboardingDto.profilePictureUrl,
+      });
+      await this.userProfileRepository.save(profile);
+    }
+
+    user.profile = profile;
+    return user;
+  }
+
+  /**
+   * Check onboarding status
+   */
+  async getOnboardingStatus(userId: string): Promise<OnboardingStatusDto> {
+    const user = await this.findByIdOrFail(userId);
+
+    const hasProfile = !!user.profile;
+    const hasUniversity = !!user.profile?.universityId;
+    const hasDepartment = !!user.profile?.department;
+    const hasLevel = !!user.profile?.studentLevel;
+    const hasBio = !!user.profile?.bio;
+    const hasProfilePicture = !!user.profile?.profilePictureUrl;
+
+    const completedSteps = {
+      hasProfile,
+      hasUniversity,
+      hasDepartment,
+      hasLevel,
+      hasBio,
+      hasProfilePicture,
+    };
+
+    const missingFields: string[] = [];
+    if (!hasProfile) missingFields.push('profile');
+    if (!hasUniversity) missingFields.push('university');
+    if (!hasDepartment) missingFields.push('department');
+    if (!hasLevel) missingFields.push('studentLevel');
+    if (!hasBio) missingFields.push('bio');
+    if (!hasProfilePicture) missingFields.push('profilePicture');
+
+    const totalSteps = Object.keys(completedSteps).length;
+    const completedCount = Object.values(completedSteps).filter(Boolean).length;
+    const profileCompletionPercentage = Math.round(
+      (completedCount / totalSteps) * 100,
+    );
+
+    const isComplete = missingFields.length === 0;
+
+    return {
+      isComplete,
+      completedSteps,
+      missingFields,
+      profileCompletionPercentage,
+    };
+  }
+
+  /**
+   * Get user profile with statistics
+   */
+  async getUserProfile(userId: string): Promise<{
+    user: User;
+    stats: {
+      totalProducts: number;
+      activeProducts: number;
+      soldProducts: number;
+      wishlistCount: number;
+      joinedDate: Date;
+      lastActive: Date;
+    };
+  }> {
+    const user = await this.findByIdOrFail(userId);
+
+    // Get product statistics
+    const products = await this.usersRepository
+      .createQueryBuilder('user')
+      .leftJoin('user.products', 'product')
+      .where('user.id = :userId', { userId })
+      .select('COUNT(product.id)', 'total')
+      .addSelect(
+        'COUNT(CASE WHEN product.isAvailable = true THEN 1 END)',
+        'active',
+      )
+      .addSelect(
+        'COUNT(CASE WHEN product.isAvailable = false THEN 1 END)',
+        'sold',
+      )
+      .getRawOne();
+
+    // Get wishlist count
+    const wishlistCount = await this.usersRepository
+      .createQueryBuilder('user')
+      .leftJoin('user.wishlists', 'wishlist')
+      .where('user.id = :userId', { userId })
+      .getCount();
+
+    return {
+      user,
+      stats: {
+        totalProducts: parseInt(products?.total) || 0,
+        activeProducts: parseInt(products?.active) || 0,
+        soldProducts: parseInt(products?.sold) || 0,
+        wishlistCount,
+        joinedDate: user.createdAt,
+        lastActive: user.updatedAt,
+      },
+    };
   }
 
   //   async getUserStats(id: string): Promise<{

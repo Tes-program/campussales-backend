@@ -27,6 +27,7 @@ import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { User } from './entities/user.entity';
 import { UserType, UserStatus } from '../common/enum/user.enums';
 import { PaginationDto } from '../common/dto/pagination.dto';
+import { CompleteOnboardingDto } from './dto/onboarding.dto';
 
 @ApiTags('Users')
 @Controller('users')
@@ -139,5 +140,42 @@ export class UsersController {
   @ApiResponse({ status: 204, description: 'User deleted successfully' })
   async remove(@Param('id', ParseUUIDPipe) id: string) {
     await this.usersService.hardDelete(id);
+  }
+
+  // Add these endpoints to src/users/user.controller.ts
+
+  @Post('onboarding/complete')
+  @ApiOperation({ summary: 'Complete user onboarding' })
+  @ApiResponse({
+    status: 200,
+    description: 'Onboarding completed successfully',
+  })
+  @ApiResponse({ status: 400, description: 'Invalid data' })
+  async completeOnboarding(
+    @CurrentUser() user: User,
+    @Body() onboardingDto: CompleteOnboardingDto,
+  ) {
+    return await this.usersService.completeOnboarding(user.id, onboardingDto);
+  }
+
+  @Get('onboarding/status')
+  @ApiOperation({ summary: 'Check onboarding status' })
+  @ApiResponse({ status: 200, description: 'Onboarding status retrieved' })
+  async getOnboardingStatus(@CurrentUser() user: User) {
+    return await this.usersService.getOnboardingStatus(user.id);
+  }
+
+  @Get('me')
+  @ApiOperation({ summary: 'Get current user profile' })
+  @ApiResponse({ status: 200, description: 'Current user profile' })
+  getProfile(@CurrentUser() user: User) {
+    return user;
+  }
+
+  @Get('me/profile')
+  @ApiOperation({ summary: 'Get current user profile with statistics' })
+  @ApiResponse({ status: 200, description: 'Profile with stats retrieved' })
+  async getProfileWithStats(@CurrentUser() user: User) {
+    return await this.usersService.getUserProfile(user.id);
   }
 }
