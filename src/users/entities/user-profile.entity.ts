@@ -25,6 +25,9 @@ export class UserProfile {
   @Column()
   lastName: string;
 
+  @Column({ type: 'enum', enum: ['Male', 'Female'], nullable: true })
+  gender?: 'Male' | 'Female';
+
   @Column({ type: 'date', nullable: true })
   dateOfBirth?: Date;
 
@@ -35,13 +38,16 @@ export class UserProfile {
   universityId?: string;
 
   @Column({ nullable: true })
-  department?: string;
+  universityName?: string;
 
   @Column({ nullable: true })
   studentLevel?: string;
 
   @Column({ type: 'text', nullable: true })
   bio?: string;
+
+  @Column({ type: 'text', nullable: true })
+  interest?: string;
 
   @CreateDateColumn()
   createdAt: Date;

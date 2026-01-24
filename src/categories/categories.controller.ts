@@ -12,6 +12,7 @@ import {
   ParseUUIDPipe,
   HttpCode,
   HttpStatus,
+  Logger,
 } from '@nestjs/common';
 import {
   ApiTags,
@@ -31,6 +32,8 @@ import { UserType } from '../common/enum/user.enums';
 @ApiTags('Categories')
 @Controller('categories')
 export class CategoriesController {
+  private readonly logger = new Logger(CategoriesController.name);
+
   constructor(private readonly categoriesService: CategoriesService) {}
 
   @Post()
@@ -104,7 +107,9 @@ export class CategoriesController {
   @ApiOperation({ summary: 'Search categories by name or description' })
   @ApiQuery({ name: 'q', required: true, type: String, example: 'electronics' })
   @ApiResponse({ status: 200, description: 'Search results retrieved' })
+  @ApiResponse({ status: 400, description: 'Invalid search query' })
   async search(@Query('q') query: string) {
+    this.logger.log(`Searching categories with query: ${query}`);
     return await this.categoriesService.searchCategories(query);
   }
 

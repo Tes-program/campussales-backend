@@ -4,7 +4,7 @@ export class OnboardingStatusDto {
   completedSteps: {
     hasProfile: boolean;
     hasUniversity: boolean;
-    hasDepartment: boolean;
+    hasUniversityName: boolean;
     hasLevel: boolean;
     hasBio: boolean;
     hasProfilePicture: boolean;

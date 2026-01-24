@@ -10,6 +10,8 @@ import { RefreshToken } from './entities/refresh-token.entity';
 import { JwtStrategy } from './strategies/jwt.strategy';
 import { JwtRefreshStrategy } from './strategies/jwt-refresh.strategy';
 import { getJwtConfig } from '../config/jwt.config';
+import { PasswordReset } from './entities/password-reset.entity';
+import { EmailService } from '../common/services/email.service';
 
 @Module({
   imports: [
@@ -18,11 +20,11 @@ import { getJwtConfig } from '../config/jwt.config';
       inject: [ConfigService],
       useFactory: getJwtConfig,
     }),
-    TypeOrmModule.forFeature([RefreshToken]),
+    TypeOrmModule.forFeature([RefreshToken, PasswordReset]),
     UsersModule,
   ],
   controllers: [AuthController],
-  providers: [AuthService, JwtStrategy, JwtRefreshStrategy],
+  providers: [AuthService, JwtStrategy, JwtRefreshStrategy, EmailService],
   exports: [AuthService],
 })
 export class AuthModule {}

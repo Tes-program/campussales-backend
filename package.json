@@ -40,6 +40,7 @@
     "class-validator": "^0.14.2",
     "compression": "^1.8.1",
     "helmet": "^8.1.0",
+    "nodemailer": "^7.0.12",
     "passport": "^0.7.0",
     "passport-jwt": "^4.0.1",
     "passport-local": "^1.0.0",

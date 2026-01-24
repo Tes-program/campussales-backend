@@ -36,6 +36,14 @@ export class UniversitiesService {
     return await this.universitiesRepository.save(university);
   }
 
+  async createMany(
+    createUniversityDtos: CreateUniversityDto[],
+  ): Promise<University[]> {
+    const universities =
+      this.universitiesRepository.create(createUniversityDtos);
+    return await this.universitiesRepository.save(universities);
+  }
+
   /**
    * Get all universities
    */

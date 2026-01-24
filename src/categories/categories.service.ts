@@ -195,15 +195,23 @@ export class CategoriesService {
    * Search categories by name
    */
   async searchCategories(query: string): Promise<Category[]> {
-    return await this.categoriesRepository
-      .createQueryBuilder('category')
-      .where('category.isActive = :isActive', { isActive: true })
-      .andWhere(
-        '(category.name ILIKE :query OR category.description ILIKE :query)',
-        { query: `%${query}%` },
-      )
-      .orderBy('category.name', 'ASC')
-      .getMany();
+    try {
+      if (!query || query.trim().length === 0) {
+        return [];
+      }
+
+      return await this.categoriesRepository
+        .createQueryBuilder('category')
+        .where('category.isActive = :isActive', { isActive: true })
+        .andWhere(
+          '(category.name ILIKE :query OR category.description ILIKE :query)',
+          { query: `%${query}%` },
+        )
+        .orderBy('category.name', 'ASC')
+        .getMany();
+    } catch (error) {
+      throw new NotFoundException('Failed to search categories');
+    }
   }
 
   /**

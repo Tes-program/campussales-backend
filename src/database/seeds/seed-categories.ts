@@ -30,4 +30,7 @@ async function seedCategories() {
   await app.close();
 }
 
-seedCategories();
+seedCategories().catch((error) => {
+  console.error('Failed to seed categories:', error);
+  process.exit(1);
+});

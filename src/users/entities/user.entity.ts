@@ -43,11 +43,14 @@ export class User {
   })
   status: UserStatus;
 
-  @Column({ default: false })
-  isVerified: boolean;
+  @Column({ unique: true })
+  username: string;
 
   @Column({ default: true })
   isActive: boolean;
+
+  @Column({ default: false })
+  isVerified: boolean;
 
   @CreateDateColumn()
   createdAt: Date;

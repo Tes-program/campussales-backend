@@ -11,6 +11,7 @@ import {
   ParseUUIDPipe,
   HttpCode,
   HttpStatus,
+  Logger,
 } from '@nestjs/common';
 import {
   ApiTags,
@@ -30,6 +31,8 @@ import { User } from '../users/entities/user.entity';
 @UseGuards(JwtAuthGuard)
 @ApiBearerAuth()
 export class WishlistController {
+  private readonly logger = new Logger(WishlistController.name);
+
   constructor(private readonly wishlistService: WishlistService) {}
 
   @Post()
@@ -48,6 +51,7 @@ export class WishlistController {
     @CurrentUser() user: User,
     @Body() addToWishlistDto: AddToWishlistDto,
   ) {
+    this.logger.log(`User ${user.id} adding product ${addToWishlistDto.productId} to wishlist`);
     return await this.wishlistService.addToWishlist(user.id, addToWishlistDto);
   }
 
@@ -134,6 +138,7 @@ export class WishlistController {
     @CurrentUser() user: User,
     @Param('productId', ParseUUIDPipe) productId: string,
   ) {
+    this.logger.log(`User ${user.id} removing product ${productId} from wishlist`);
     await this.wishlistService.removeFromWishlist(user.id, productId);
   }
 }

@@ -9,8 +9,8 @@ import { User } from './entities/user.entity';
 import { UserProfile } from './entities/user-profile.entity';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
-import { UserType, UserStatus } from '../common/enum/user.enums';
-import * as bcrypt from 'bcryptjs';
+import { UserStatus } from '../common/enum/user.enums';
+// import * as bcrypt from 'bcryptjs';
 import { OnboardingStatusDto } from './dto/check-status-onboarding.dto';
 import { CompleteOnboardingDto } from './dto/onboarding.dto';
 
@@ -24,56 +24,80 @@ export class UsersService {
   ) {}
 
   async create(createUserDto: CreateUserDto): Promise<User> {
-    // Check if user already exists
-    const existingUser = await this.findByEmail(createUserDto.email);
-    if (existingUser) {
-      throw new ConflictException('Email already exists');
-    }
+    try {
+      // Validate input
+      if (!createUserDto.email || !createUserDto.username) {
+        throw new ConflictException('Email and username are required');
+      }
 
-    // Create user
-    const user = this.usersRepository.create({
-      email: createUserDto.email,
-      passwordHash: createUserDto.passwordHash,
-      phoneNumber: createUserDto.phoneNumber,
-      userType: createUserDto.userType || UserType.STUDENT,
-      status: UserStatus.ACTIVE,
-    });
+      // Check if user already exists
+      const existingUser = await this.findByEmail(createUserDto.email);
+      if (existingUser) {
+        throw new ConflictException(
+          'A user with this email already exists',
+        );
+      }
 
-    const savedUser = await this.usersRepository.save(user);
+      // Check if username already exists
+      const existingUsername = await this.findByUsername(
+        createUserDto.username,
+      );
+      if (existingUsername) {
+        throw new ConflictException(
+          'This username is already taken. Please choose another one',
+        );
+      }
 
-    // Create user profile if provided
-    if (createUserDto.profile) {
-      const profile = this.userProfileRepository.create({
-        userId: savedUser.id,
-        firstName: createUserDto.profile.firstName,
-        lastName: createUserDto.profile.lastName,
-        dateOfBirth: createUserDto.profile.dateOfBirth,
-        profilePictureUrl: createUserDto.profile.profilePictureUrl,
-        universityId: createUserDto.profile.universityId,
-        department: createUserDto.profile.department,
-        studentLevel: createUserDto.profile.studentLevel,
-        bio: createUserDto.profile.bio,
+      // Create user
+      const user = this.usersRepository.create({
+        email: createUserDto.email,
+        passwordHash: createUserDto.passwordHash,
+        username: createUserDto.username,
+        status: UserStatus.ACTIVE,
       });
 
-      const savedProfile = await this.userProfileRepository.save(profile);
-      savedUser.profile = savedProfile;
-    }
+      const savedUser = await this.usersRepository.save(user);
 
-    return savedUser;
+      if (!savedUser) {
+        throw new ConflictException('Failed to create user');
+      }
+
+      return savedUser;
+    } catch (error) {
+      if (error instanceof ConflictException) {
+        throw error;
+      }
+      throw new ConflictException('Unable to create user account');
+    }
+  }
+
+  // New method to find user by username
+  async findByUsername(username: string): Promise<User | null> {
+    return await this.usersRepository.findOne({
+      where: { username },
+    });
   }
 
   async findAll(
     page: number = 1,
     limit: number = 10,
   ): Promise<{ data: User[]; total: number }> {
-    const [users, total] = await this.usersRepository.findAndCount({
-      relations: ['profile', 'profile.university'],
-      skip: (page - 1) * limit,
-      take: limit,
-      order: { createdAt: 'DESC' },
-    });
+    try {
+      // Validate pagination parameters
+      if (page < 1) page = 1;
+      if (limit < 1 || limit > 100) limit = 10;
 
-    return { data: users, total };
+      const [users, total] = await this.usersRepository.findAndCount({
+        relations: ['profile', 'profile.university'],
+        skip: (page - 1) * limit,
+        take: limit,
+        order: { createdAt: 'DESC' },
+      });
+
+      return { data: users, total };
+    } catch (error) {
+      throw new NotFoundException('Unable to fetch users');
+    }
   }
 
   async findById(id: string): Promise<User | null> {
@@ -99,69 +123,81 @@ export class UsersService {
   }
 
   async update(id: string, updateUserDto: UpdateUserDto): Promise<User> {
-    const user = await this.findByIdOrFail(id);
-
-    // Update user fields
-    if (updateUserDto.email && updateUserDto.email !== user.email) {
-      const existingUser = await this.findByEmail(updateUserDto.email);
-      if (existingUser && existingUser.id !== id) {
-        throw new ConflictException('Email already exists');
+    try {
+      if (!id) {
+        throw new NotFoundException('User ID is required');
       }
-      user.email = updateUserDto.email;
-    }
 
-    if (updateUserDto.phoneNumber !== undefined) {
-      user.phoneNumber = updateUserDto.phoneNumber;
-    }
+      const user = await this.findByIdOrFail(id);
 
-    if (updateUserDto.userType) {
-      user.userType = updateUserDto.userType;
-    }
+      // Update user fields
+      if (updateUserDto.email && updateUserDto.email !== user.email) {
+        const existingUser = await this.findByEmail(updateUserDto.email);
+        if (existingUser && existingUser.id !== id) {
+          throw new ConflictException(
+            'Another user with this email already exists',
+          );
+        }
+        user.email = updateUserDto.email;
+      }
 
-    if (updateUserDto.status) {
-      user.status = updateUserDto.status;
-    }
+      if (updateUserDto.phoneNumber !== undefined) {
+        user.phoneNumber = updateUserDto.phoneNumber;
+      }
 
-    if (updateUserDto.isVerified !== undefined) {
-      user.isVerified = updateUserDto.isVerified;
-    }
+      if (updateUserDto.userType) {
+        user.userType = updateUserDto.userType;
+      }
 
-    if (updateUserDto.isActive !== undefined) {
-      user.isActive = updateUserDto.isActive;
-    }
+      if (updateUserDto.status) {
+        user.status = updateUserDto.status;
+      }
 
-    const updatedUser = await this.usersRepository.save(user);
+      if (updateUserDto.isActive !== undefined) {
+        user.isActive = updateUserDto.isActive;
+      }
 
-    // Update profile if provided
-    if (updateUserDto.profile) {
-      let profile = await this.userProfileRepository.findOne({
-        where: { userId: id },
-      });
+      const updatedUser = await this.usersRepository.save(user);
 
-      if (profile) {
-        // Update existing profile
-        Object.assign(profile, updateUserDto.profile);
-        await this.userProfileRepository.save(profile);
-      } else {
-        // Create new profile
-        profile = this.userProfileRepository.create({
-          userId: id,
-          ...updateUserDto.profile,
+      // Update profile if provided
+      if (updateUserDto.profile) {
+        let profile = await this.userProfileRepository.findOne({
+          where: { userId: id },
         });
-        await this.userProfileRepository.save(profile);
+
+        if (profile) {
+          // Update existing profile
+          Object.assign(profile, updateUserDto.profile);
+          await this.userProfileRepository.save(profile);
+        } else {
+          // Create new profile
+          profile = this.userProfileRepository.create({
+            userId: id,
+            ...updateUserDto.profile,
+          });
+          await this.userProfileRepository.save(profile);
+        }
+
+        updatedUser.profile = profile;
       }
 
-      updatedUser.profile = profile;
+      return updatedUser;
+    } catch (error) {
+      if (
+        error instanceof NotFoundException ||
+        error instanceof ConflictException
+      ) {
+        throw error;
+      }
+      throw new ConflictException('Failed to update user');
     }
-
-    return updatedUser;
   }
 
   async updatePassword(id: string, newPassword: string): Promise<void> {
     const user = await this.findByIdOrFail(id);
-    const passwordHash = await bcrypt.hash(newPassword, 12);
+    // const passwordHash = await bcrypt.hash(newPassword, 12);
 
-    user.passwordHash = passwordHash;
+    user.passwordHash = newPassword;
     await this.usersRepository.save(user);
   }
 
@@ -198,44 +234,65 @@ export class UsersService {
     userId: string,
     onboardingDto: CompleteOnboardingDto,
   ): Promise<User> {
-    const user = await this.findByIdOrFail(userId);
+    try {
+      if (!userId) {
+        throw new NotFoundException('User ID is required');
+      }
 
-    // Check if profile exists
-    let profile = await this.userProfileRepository.findOne({
-      where: { userId },
-    });
+      // Validate required fields
+      if (!onboardingDto.firstName || !onboardingDto.lastName) {
+        throw new ConflictException('First name and last name are required');
+      }
 
-    if (profile) {
-      // Update existing profile
-      Object.assign(profile, {
-        firstName: onboardingDto.firstName,
-        lastName: onboardingDto.lastName,
-        universityId: onboardingDto.universityId,
-        department: onboardingDto.department,
-        studentLevel: onboardingDto.studentLevel,
-        dateOfBirth: onboardingDto.dateOfBirth,
-        bio: onboardingDto.bio,
-        profilePictureUrl: onboardingDto.profilePictureUrl,
+      const user = await this.findByIdOrFail(userId);
+
+      // Check if profile exists
+      let profile = await this.userProfileRepository.findOne({
+        where: { userId },
       });
-      await this.userProfileRepository.save(profile);
-    } else {
-      // Create new profile
-      profile = this.userProfileRepository.create({
-        userId,
-        firstName: onboardingDto.firstName,
-        lastName: onboardingDto.lastName,
-        universityId: onboardingDto.universityId,
-        department: onboardingDto.department,
-        studentLevel: onboardingDto.studentLevel,
-        dateOfBirth: onboardingDto.dateOfBirth,
-        bio: onboardingDto.bio,
-        profilePictureUrl: onboardingDto.profilePictureUrl,
-      });
-      await this.userProfileRepository.save(profile);
+
+      if (profile) {
+        // Update existing profile
+        Object.assign(profile, {
+          firstName: onboardingDto.firstName,
+          lastName: onboardingDto.lastName,
+          universityId: onboardingDto.universityId,
+          universityName: onboardingDto.universityName,
+          studentLevel: onboardingDto.level,
+          dateOfBirth: onboardingDto.dateOfBirth,
+          bio: onboardingDto.bio,
+          profilePictureUrl: onboardingDto.profilePictureUrl,
+          gender: onboardingDto.gender,
+        });
+        await this.userProfileRepository.save(profile);
+      } else {
+        // Create new profile
+        profile = this.userProfileRepository.create({
+          userId,
+          firstName: onboardingDto.firstName,
+          lastName: onboardingDto.lastName,
+          universityId: onboardingDto.universityId,
+          universityName: onboardingDto.universityName,
+          studentLevel: onboardingDto.level,
+          dateOfBirth: onboardingDto.dateOfBirth,
+          bio: onboardingDto.bio,
+          profilePictureUrl: onboardingDto.profilePictureUrl,
+          gender: onboardingDto.gender,
+        });
+        await this.userProfileRepository.save(profile);
+      }
+
+      user.profile = profile;
+      return user;
+    } catch (error) {
+      if (
+        error instanceof NotFoundException ||
+        error instanceof ConflictException
+      ) {
+        throw error;
+      }
+      throw new ConflictException('Failed to complete onboarding');
     }
-
-    user.profile = profile;
-    return user;
   }
 
   /**
@@ -246,7 +303,7 @@ export class UsersService {
 
     const hasProfile = !!user.profile;
     const hasUniversity = !!user.profile?.universityId;
-    const hasDepartment = !!user.profile?.department;
+    const hasUniversityName = !!user.profile?.universityName;
     const hasLevel = !!user.profile?.studentLevel;
     const hasBio = !!user.profile?.bio;
     const hasProfilePicture = !!user.profile?.profilePictureUrl;
@@ -254,7 +311,7 @@ export class UsersService {
     const completedSteps = {
       hasProfile,
       hasUniversity,
-      hasDepartment,
+      hasUniversityName,
       hasLevel,
       hasBio,
       hasProfilePicture,
@@ -263,7 +320,7 @@ export class UsersService {
     const missingFields: string[] = [];
     if (!hasProfile) missingFields.push('profile');
     if (!hasUniversity) missingFields.push('university');
-    if (!hasDepartment) missingFields.push('department');
+    if (!hasUniversityName) missingFields.push('universityName');
     if (!hasLevel) missingFields.push('studentLevel');
     if (!hasBio) missingFields.push('bio');
     if (!hasProfilePicture) missingFields.push('profilePicture');

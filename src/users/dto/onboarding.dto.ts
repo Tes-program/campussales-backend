@@ -26,11 +26,38 @@ export class CompleteOnboardingDto {
   @IsUUID()
   universityId: string;
 
-  @ApiProperty({ example: 'Computer Science', required: false })
+  @ApiProperty({ example: 'Babcock University', required: false })
   @IsOptional()
   @IsString()
   @MaxLength(100)
-  department?: string;
+  universityName?: string;
+
+  // Gender
+  @ApiProperty({ example: 'Male', required: false })
+  @IsOptional()
+  @IsString()
+  gender?: 'Male' | 'Female';
+
+  // Interest
+  @ApiProperty({
+    example: 'Technology, Sports, Music',
+    required: false,
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(200)
+  interests?: string;
+
+  // Phone Number
+  @ApiProperty({
+    example: '+1234567890',
+    required: false,
+  })
+  @IsOptional()
+  @IsString()
+  @MinLength(7)
+  @MaxLength(15)
+  phoneNumber?: string;
 
   @ApiProperty({
     example: '100',
@@ -40,7 +67,7 @@ export class CompleteOnboardingDto {
   @IsOptional()
   @IsString()
   @MaxLength(50)
-  studentLevel?: string;
+  level?: string;
 
   @ApiProperty({ example: '2000-01-01', required: false })
   @IsOptional()

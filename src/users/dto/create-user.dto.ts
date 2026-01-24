@@ -3,13 +3,9 @@ import {
   IsEmail,
   IsString,
   IsOptional,
-  IsEnum,
-  ValidateNested,
   IsDateString,
   IsUUID,
 } from 'class-validator';
-import { Type } from 'class-transformer';
-import { UserType } from '../../common/enum/user.enums';
 
 export class CreateUserProfileDto {
   @ApiProperty({ example: 'John' })
@@ -59,19 +55,7 @@ export class CreateUserDto {
   @IsString()
   passwordHash: string; // This will be hashed password, not plain text
 
-  @ApiProperty({ example: '+1234567890', required: false })
-  @IsOptional()
+  @ApiProperty({ example: 'johndoe' })
   @IsString()
-  phoneNumber?: string;
-
-  @ApiProperty({ enum: UserType, default: UserType.STUDENT })
-  @IsOptional()
-  @IsEnum(UserType)
-  userType?: UserType;
-
-  @ApiProperty({ type: CreateUserProfileDto, required: false })
-  @IsOptional()
-  @ValidateNested()
-  @Type(() => CreateUserProfileDto)
-  profile?: CreateUserProfileDto;
+  username: string;
 }

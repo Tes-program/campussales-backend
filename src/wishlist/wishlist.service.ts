@@ -26,52 +26,85 @@ export class WishlistService {
     userId: string,
     addToWishlistDto: AddToWishlistDto,
   ): Promise<Wishlist> {
-    const { productId } = addToWishlistDto;
+    try {
+      const { productId } = addToWishlistDto;
 
-    // Check if product exists
-    const product = await this.productRepository.findOne({
-      where: { id: productId },
-    });
+      if (!userId || !productId) {
+        throw new BadRequestException(
+          'User ID and Product ID are required',
+        );
+      }
 
-    if (!product) {
-      throw new NotFoundException('Product not found');
+      // Check if product exists
+      const product = await this.productRepository.findOne({
+        where: { id: productId },
+      });
+
+      if (!product) {
+        throw new NotFoundException(
+          'Product not found or has been removed',
+        );
+      }
+
+      if (!product.isAvailable) {
+        throw new BadRequestException(
+          'This product is no longer available',
+        );
+      }
+
+      // Prevent users from adding their own products to wishlist
+      if (product.sellerId === userId) {
+        throw new BadRequestException(
+          'You cannot add your own product to your wishlist',
+        );
+      }
+
+      // Check if already in wishlist
+      const existingWishlistItem = await this.wishlistRepository.findOne({
+        where: { userId, productId },
+      });
+
+      if (existingWishlistItem) {
+        throw new ConflictException(
+          'This product is already in your wishlist',
+        );
+      }
+
+      // Add to wishlist
+      const wishlistItem = this.wishlistRepository.create({
+        userId,
+        productId,
+      });
+
+      return await this.wishlistRepository.save(wishlistItem);
+    } catch (error) {
+      if (
+        error instanceof BadRequestException ||
+        error instanceof NotFoundException ||
+        error instanceof ConflictException
+      ) {
+        throw error;
+      }
+      throw new BadRequestException('Failed to add product to wishlist');
     }
-
-    // Prevent users from adding their own products to wishlist
-    if (product.sellerId === userId) {
-      throw new BadRequestException(
-        'You cannot add your own product to wishlist',
-      );
-    }
-
-    // Check if already in wishlist
-    const existingWishlistItem = await this.wishlistRepository.findOne({
-      where: { userId, productId },
-    });
-
-    if (existingWishlistItem) {
-      throw new ConflictException('Product already in wishlist');
-    }
-
-    // Add to wishlist
-    const wishlistItem = this.wishlistRepository.create({
-      userId,
-      productId,
-    });
-
-    return await this.wishlistRepository.save(wishlistItem);
   }
 
   /**
    * Remove product from wishlist
    */
   async removeFromWishlist(userId: string, productId: string): Promise<void> {
+    if (!userId || !productId) {
+      throw new BadRequestException('User ID and Product ID are required');
+    }
+
     const wishlistItem = await this.wishlistRepository.findOne({
       where: { userId, productId },
     });
 
     if (!wishlistItem) {
-      throw new NotFoundException('Product not found in wishlist');
+      throw new NotFoundException(
+        'Product not found in your wishlist',
+      );
     }
 
     await this.wishlistRepository.remove(wishlistItem);
@@ -203,21 +236,36 @@ export class WishlistService {
     userId: string,
     productIds: string[],
   ): Promise<{ [productId: string]: boolean }> {
-    const wishlistItems = await this.wishlistRepository.find({
-      where: { userId },
-      select: ['productId'],
-    });
+    try {
+      if (!userId) {
+        throw new BadRequestException('User ID is required');
+      }
 
-    const wishlistProductIds = new Set(
-      wishlistItems.map((item) => item.productId),
-    );
+      if (!productIds || productIds.length === 0) {
+        return {};
+      }
 
-    const result: { [productId: string]: boolean } = {};
-    productIds.forEach((productId) => {
-      result[productId] = wishlistProductIds.has(productId);
-    });
+      const wishlistItems = await this.wishlistRepository.find({
+        where: { userId },
+        select: ['productId'],
+      });
 
-    return result;
+      const wishlistProductIds = new Set(
+        wishlistItems.map((item) => item.productId),
+      );
+
+      const result: { [productId: string]: boolean } = {};
+      productIds.forEach((productId) => {
+        result[productId] = wishlistProductIds.has(productId);
+      });
+
+      return result;
+    } catch (error) {
+      if (error instanceof BadRequestException) {
+        throw error;
+      }
+      throw new BadRequestException('Failed to check products in wishlist');
+    }
   }
 
   /**

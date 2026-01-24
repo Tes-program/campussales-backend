@@ -18,18 +18,9 @@ export class RegisterDto {
   @MinLength(8)
   password: string;
 
-  @ApiProperty({ example: 'John' })
+  @ApiProperty({ example: 'johndoe' })
   @IsString()
-  firstName: string;
-
-  @ApiProperty({ example: 'Doe' })
-  @IsString()
-  lastName: string;
-
-  @ApiProperty({ example: '+1234567890', required: false })
-  @IsOptional()
-  @IsString()
-  phoneNumber?: string;
+  username: string;
 
   @ApiProperty({ enum: UserType, default: UserType.STUDENT })
   @IsEnum(UserType)
