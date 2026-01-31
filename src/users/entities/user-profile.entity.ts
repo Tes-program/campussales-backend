@@ -46,8 +46,8 @@ export class UserProfile {
   @Column({ type: 'text', nullable: true })
   bio?: string;
 
-  @Column({ type: 'text', nullable: true })
-  interest?: string;
+  @Column({ type: 'simple-array', nullable: true })
+  interest?: string[];
 
   @CreateDateColumn()
   createdAt: Date;

@@ -1,4 +1,4 @@
-// src/users/dto/onboarding.dto.ts
+// src/users/dto/onboarding.dto.ts - UPDATE
 import { ApiProperty } from '@nestjs/swagger';
 import {
   IsString,
@@ -7,7 +7,15 @@ import {
   IsDateString,
   MaxLength,
   MinLength,
+  IsEnum,
 } from 'class-validator';
+import { Transform } from 'class-transformer';
+
+// Add this enum to match your entity
+export enum Gender {
+  MALE = 'Male',
+  FEMALE = 'Female',
+}
 
 export class CompleteOnboardingDto {
   @ApiProperty({ example: 'John' })
@@ -32,23 +40,46 @@ export class CompleteOnboardingDto {
   @MaxLength(100)
   universityName?: string;
 
-  // Gender
-  @ApiProperty({ example: 'Male', required: false })
-  @IsOptional()
-  @IsString()
-  gender?: 'Male' | 'Female';
-
-  // Interest
+  // ✅ FIX: Add proper enum validation and transformation
   @ApiProperty({
-    example: 'Technology, Sports, Music',
+    example: 'Male',
+    enum: Gender,
+    description: 'Gender (Male or Female)',
     required: false,
   })
   @IsOptional()
-  @IsString()
-  @MaxLength(200)
-  interests?: string;
+  @IsEnum(Gender, { message: 'Gender must be either "Male" or "Female"' })
+  @Transform(({ value }: { value: unknown }) => {
+    // Capitalize first letter to match enum
+    if (typeof value === 'string') {
+      return value.charAt(0).toUpperCase() + value.slice(1).toLowerCase();
+    }
+    return value as Gender;
+  })
+  gender?: Gender;
 
-  // Phone Number
+  // ✅ FIX: Validate interests as array
+  @ApiProperty({
+    example: ['Technology', 'Sports', 'Music'],
+    description: 'Array of user interests',
+    required: false,
+    type: [String],
+  })
+  @IsOptional()
+  @IsString({ each: true })
+  @Transform(({ value }: { value: unknown }) => {
+    // Handle if sent as JSON string
+    if (typeof value === 'string') {
+      try {
+        return JSON.parse(value) as string[];
+      } catch {
+        return value.split(',').map((i) => i.trim());
+      }
+    }
+    return value as string[];
+  })
+  interests?: string[];
+
   @ApiProperty({
     example: '+1234567890',
     required: false,
@@ -60,7 +91,7 @@ export class CompleteOnboardingDto {
   phoneNumber?: string;
 
   @ApiProperty({
-    example: '100',
+    example: '400',
     description: '100, 200, 300, 400, etc.',
     required: false,
   })

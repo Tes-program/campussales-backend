@@ -49,10 +49,10 @@ export class HttpExceptionFilter implements ExceptionFilter {
       // Handle TypeORM database errors
       status = HttpStatus.BAD_REQUEST;
       error = 'Database Error';
-      
+
       // Handle specific database errors
       const dbError = exception as any;
-      
+
       if (dbError.code === '23505') {
         // Unique constraint violation
         message = 'A record with this data already exists';
@@ -100,13 +100,13 @@ export class HttpExceptionFilter implements ExceptionFilter {
     }
 
     // Log error for monitoring
-    if (status >= 500) {
+    if (status >= HttpStatus.INTERNAL_SERVER_ERROR) {
       this.logger.error(
         `${request.method} ${request.url}`,
         JSON.stringify(errorResponse),
         'HttpExceptionFilter',
       );
-    } else if (status >= 400) {
+    } else if (status >= HttpStatus.BAD_REQUEST) {
       this.logger.warn(
         `${request.method} ${request.url}`,
         JSON.stringify(errorResponse),

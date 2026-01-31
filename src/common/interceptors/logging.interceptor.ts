@@ -1,3 +1,4 @@
+// src/common/interceptors/logging.interceptor.ts - FIXED
 import {
   Injectable,
   NestInterceptor,
@@ -25,17 +26,21 @@ export class LoggingInterceptor implements NestInterceptor {
       `Incoming Request: ${method} ${url} - IP: ${ip} - User Agent: ${userAgent}`,
     );
 
-    if (Object.keys(body).length > 0) {
-      // Don't log sensitive data like passwords
+    // ✅ FIX: Safe check before using Object.keys()
+    if (body && typeof body === 'object' && Object.keys(body).length > 0) {
       const sanitizedBody = this.sanitizeData(body);
       this.logger.debug(`Request Body: ${JSON.stringify(sanitizedBody)}`);
     }
 
-    if (Object.keys(params).length > 0) {
+    if (
+      params &&
+      typeof params === 'object' &&
+      Object.keys(params).length > 0
+    ) {
       this.logger.debug(`Request Params: ${JSON.stringify(params)}`);
     }
 
-    if (Object.keys(query).length > 0) {
+    if (query && typeof query === 'object' && Object.keys(query).length > 0) {
       this.logger.debug(`Request Query: ${JSON.stringify(query)}`);
     }
 
@@ -55,7 +60,7 @@ export class LoggingInterceptor implements NestInterceptor {
       }),
       catchError((error) => {
         const responseTime = Date.now() - now;
-        
+
         this.logger.error(
           `Request Failed: ${method} ${url} - ${responseTime}ms`,
           error.stack,
@@ -67,6 +72,7 @@ export class LoggingInterceptor implements NestInterceptor {
   }
 
   private sanitizeData(data: any): any {
+    // ✅ FIX: Add null/undefined checks
     if (!data || typeof data !== 'object') {
       return data;
     }
@@ -88,7 +94,10 @@ export class LoggingInterceptor implements NestInterceptor {
     for (const key of Object.keys(sanitized)) {
       if (sensitiveFields.includes(key)) {
         sanitized[key] = '***REDACTED***';
-      } else if (typeof sanitized[key] === 'object' && sanitized[key] !== null) {
+      } else if (
+        typeof sanitized[key] === 'object' &&
+        sanitized[key] !== null
+      ) {
         sanitized[key] = this.sanitizeData(sanitized[key]);
       }
     }

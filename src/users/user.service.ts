@@ -13,6 +13,7 @@ import { UserStatus } from '../common/enum/user.enums';
 // import * as bcrypt from 'bcryptjs';
 import { OnboardingStatusDto } from './dto/check-status-onboarding.dto';
 import { CompleteOnboardingDto } from './dto/onboarding.dto';
+import { Logger } from '@nestjs/common';
 
 @Injectable()
 export class UsersService {
@@ -21,6 +22,7 @@ export class UsersService {
     private usersRepository: Repository<User>,
     @InjectRepository(UserProfile)
     private userProfileRepository: Repository<UserProfile>,
+    private readonly logger: Logger,
   ) {}
 
   async create(createUserDto: CreateUserDto): Promise<User> {
@@ -33,9 +35,7 @@ export class UsersService {
       // Check if user already exists
       const existingUser = await this.findByEmail(createUserDto.email);
       if (existingUser) {
-        throw new ConflictException(
-          'A user with this email already exists',
-        );
+        throw new ConflictException('A user with this email already exists');
       }
 
       // Check if username already exists
@@ -95,6 +95,7 @@ export class UsersService {
       });
 
       return { data: users, total };
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars
     } catch (error) {
       throw new NotFoundException('Unable to fetch users');
     }
@@ -227,9 +228,7 @@ export class UsersService {
 
   // Add these methods to src/users/user.service.ts
 
-  /**
-   * Complete user onboarding
-   */
+  // src/users/user.service.ts - UPDATE completeOnboarding method
   async completeOnboarding(
     userId: string,
     onboardingDto: CompleteOnboardingDto,
@@ -251,33 +250,41 @@ export class UsersService {
         where: { userId },
       });
 
+      // ✅ FIX: Normalize gender to match enum
+      const normalizedGender = onboardingDto.gender
+        ? ((onboardingDto.gender.charAt(0).toUpperCase() +
+            onboardingDto.gender.slice(1).toLowerCase()) as 'Male' | 'Female')
+        : undefined;
+
+      // ✅ FIX: Handle interests array properly
+      const interestsArray = Array.isArray(onboardingDto.interests)
+        ? onboardingDto.interests
+        : onboardingDto.interests
+          ? [onboardingDto.interests]
+          : undefined;
+
+      const profileData = {
+        firstName: onboardingDto.firstName,
+        lastName: onboardingDto.lastName,
+        universityId: onboardingDto.universityId,
+        universityName: onboardingDto.universityName,
+        studentLevel: onboardingDto.level,
+        dateOfBirth: onboardingDto.dateOfBirth,
+        bio: onboardingDto.bio,
+        profilePictureUrl: onboardingDto.profilePictureUrl,
+        gender: normalizedGender,
+        interest: interestsArray, // Note: it's 'interest' not 'interests' in DB
+      };
+
       if (profile) {
         // Update existing profile
-        Object.assign(profile, {
-          firstName: onboardingDto.firstName,
-          lastName: onboardingDto.lastName,
-          universityId: onboardingDto.universityId,
-          universityName: onboardingDto.universityName,
-          studentLevel: onboardingDto.level,
-          dateOfBirth: onboardingDto.dateOfBirth,
-          bio: onboardingDto.bio,
-          profilePictureUrl: onboardingDto.profilePictureUrl,
-          gender: onboardingDto.gender,
-        });
+        Object.assign(profile, profileData);
         await this.userProfileRepository.save(profile);
       } else {
         // Create new profile
         profile = this.userProfileRepository.create({
           userId,
-          firstName: onboardingDto.firstName,
-          lastName: onboardingDto.lastName,
-          universityId: onboardingDto.universityId,
-          universityName: onboardingDto.universityName,
-          studentLevel: onboardingDto.level,
-          dateOfBirth: onboardingDto.dateOfBirth,
-          bio: onboardingDto.bio,
-          profilePictureUrl: onboardingDto.profilePictureUrl,
-          gender: onboardingDto.gender,
+          ...profileData,
         });
         await this.userProfileRepository.save(profile);
       }
@@ -291,7 +298,16 @@ export class UsersService {
       ) {
         throw error;
       }
-      throw new ConflictException('Failed to complete onboarding');
+
+      // ✅ FIX: Log the actual error for debugging
+      this.logger.error(
+        `Failed to complete onboarding for user ${userId}: ${error.message}`,
+        error.stack,
+      );
+
+      throw new ConflictException(
+        `Failed to complete onboarding: ${error.message}`,
+      );
     }
   }
 

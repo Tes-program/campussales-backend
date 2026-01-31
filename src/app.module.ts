@@ -21,7 +21,21 @@ import { UniversitiesModule } from './universities/universities.module';
     // Database
     TypeOrmModule.forRootAsync({
       inject: [ConfigService],
-      useFactory: getDatabaseConfig,
+      useFactory: (configService: ConfigService) => {
+        const config = getDatabaseConfig(configService);
+        return {
+          ...config,
+          // Add connection retry logic
+          retryAttempts: 3,
+          retryDelay: 3000,
+          autoLoadEntities: true,
+          logger: 'advanced-console',
+          logging:
+            configService.get('NODE_ENV') === 'development'
+              ? ['error', 'warn', 'migration']
+              : ['error'],
+        };
+      },
     }),
 
     // Rate limiting
