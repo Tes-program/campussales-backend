@@ -51,7 +51,7 @@ async function bootstrap() {
   );
 
   // API prefix
-  app.setGlobalPrefix('api/v1');
+  app.setGlobalPrefix('api');
 
   // Swagger documentation
   const config = new DocumentBuilder()
@@ -69,7 +69,7 @@ async function bootstrap() {
 
   console.log(`🚀 Application is running on: http://localhost:${port}`);
   console.log(`📚 API Documentation: http://localhost:${port}/api/docs`);
-  console.log(`🔍 Health Check: http://localhost:${port}/api/v1`);
+  console.log(`🔍 Health Check: http://localhost:${port}/api`);
 }
 
 bootstrap().catch((error) => {

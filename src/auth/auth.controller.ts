@@ -6,6 +6,7 @@ import {
   HttpStatus,
   UseGuards,
   Logger,
+  Get,
 } from '@nestjs/common';
 import {
   ApiTags,
@@ -119,5 +120,20 @@ export class AuthController {
   async resetPassword(@Body() resetPasswordDto: ResetPasswordDto) {
     this.logger.log('Password reset attempt with token');
     return await this.authService.resetPassword(resetPasswordDto);
+  }
+
+  // me endpoint can be added here if needed
+  @Get('me')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Get current authenticated user' })
+  @ApiResponse({
+    status: 200,
+    description: 'Current user retrieved successfully',
+  })
+  @ApiResponse({ status: 401, description: 'Unauthorized' })
+  getCurrentUser(@CurrentUser() user: User) {
+    this.logger.log(`Fetching current user: ${user.id}`);
+    return user;
   }
 }

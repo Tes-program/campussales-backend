@@ -62,7 +62,9 @@ export class UsersController {
   @ApiResponse({ status: 200, description: 'Users retrieved successfully' })
   @ApiResponse({ status: 403, description: 'Forbidden - Admin only' })
   async findAll(@Query() paginationDto: PaginationDto) {
-    this.logger.log(`Fetching users: page ${paginationDto.page}, limit ${paginationDto.limit}`);
+    this.logger.log(
+      `Fetching users: page ${paginationDto.page}, limit ${paginationDto.limit}`,
+    );
     return await this.usersService.findAll(
       paginationDto.page,
       paginationDto.limit,
