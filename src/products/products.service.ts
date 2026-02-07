@@ -11,6 +11,10 @@ import { ProductImage } from './entities/product-image.entity';
 import { CreateProductDto } from './dto/create-product.dto';
 import { UpdateProductDto } from './dto/update-product.dto';
 import { FilterProductDto } from './dto/filter-product.dto';
+import { ProductDraft } from './entities/product-draft.entity';
+import { CreateDraftDto } from './dto/create-draft.dto';
+import { UpdateDraftDto } from './dto/update-draft.dto';
+import { PublishDraftDto } from './dto/publish-draft.dto';
 
 @Injectable()
 export class ProductsService {
@@ -19,6 +23,8 @@ export class ProductsService {
     private productsRepository: Repository<Product>,
     @InjectRepository(ProductImage)
     private productImagesRepository: Repository<ProductImage>,
+    @InjectRepository(ProductDraft)
+    private productDraftsRepository: Repository<ProductDraft>,
   ) {}
 
   async create(
@@ -127,13 +133,10 @@ export class ProductsService {
       }
 
       if (minPrice !== undefined && maxPrice !== undefined) {
-        queryBuilder.andWhere(
-          'product.price BETWEEN :minPrice AND :maxPrice',
-          {
-            minPrice,
-            maxPrice,
-          },
-        );
+        queryBuilder.andWhere('product.price BETWEEN :minPrice AND :maxPrice', {
+          minPrice,
+          maxPrice,
+        });
       } else if (minPrice !== undefined) {
         queryBuilder.andWhere('product.price >= :minPrice', { minPrice });
       } else if (maxPrice !== undefined) {
@@ -190,9 +193,7 @@ export class ProductsService {
     });
 
     if (!product) {
-      throw new NotFoundException(
-        'Product not found or has been removed',
-      );
+      throw new NotFoundException('Product not found or has been removed');
     }
 
     // Increment view count
@@ -228,10 +229,7 @@ export class ProductsService {
       }
 
       // Validate price and quantity if provided
-      if (
-        updateProductDto.price !== undefined &&
-        updateProductDto.price < 0
-      ) {
+      if (updateProductDto.price !== undefined && updateProductDto.price < 0) {
         throw new ForbiddenException('Price must be a positive number');
       }
 
@@ -248,9 +246,7 @@ export class ProductsService {
       });
 
       if (!product) {
-        throw new NotFoundException(
-          'Product not found or has been removed',
-        );
+        throw new NotFoundException('Product not found or has been removed');
       }
 
       // Check ownership
@@ -348,6 +344,244 @@ export class ProductsService {
       take: limit,
       order: { createdAt: 'DESC' },
     });
+  }
+
+  /**
+   * Create a new draft
+   */
+  async createDraft(
+    sellerId: string,
+    createDraftDto: CreateDraftDto,
+  ): Promise<ProductDraft> {
+    try {
+      if (!sellerId) {
+        throw new ForbiddenException('Seller ID is required');
+      }
+
+      const draft = this.productDraftsRepository.create({
+        sellerId,
+        ...createDraftDto,
+      });
+
+      return await this.productDraftsRepository.save(draft);
+    } catch (error) {
+      if (error instanceof ForbiddenException) {
+        throw error;
+      }
+      throw new ForbiddenException('Failed to create draft');
+    }
+  }
+
+  /**
+   * Get all drafts for a user
+   */
+  async getUserDrafts(
+    sellerId: string,
+    page: number = 1,
+    limit: number = 10,
+  ): Promise<{
+    data: ProductDraft[];
+    total: number;
+    page: number;
+    limit: number;
+  }> {
+    try {
+      const validPage = page < 1 ? 1 : page;
+      const validLimit = limit < 1 || limit > 100 ? 10 : limit;
+
+      const [drafts, total] = await this.productDraftsRepository.findAndCount({
+        where: { sellerId },
+        skip: (validPage - 1) * validLimit,
+        take: validLimit,
+        order: { updatedAt: 'DESC' },
+      });
+
+      return {
+        data: drafts,
+        total,
+        page: validPage,
+        limit: validLimit,
+      };
+    } catch (error) {
+      throw new NotFoundException('Failed to fetch drafts');
+    }
+  }
+
+  /**
+   * Get draft by ID
+   */
+  async getDraftById(id: string, sellerId: string): Promise<ProductDraft> {
+    if (!id || !sellerId) {
+      throw new NotFoundException('Draft ID and Seller ID are required');
+    }
+
+    const draft = await this.productDraftsRepository.findOne({
+      where: { id, sellerId },
+    });
+
+    if (!draft) {
+      throw new NotFoundException('Draft not found or access denied');
+    }
+
+    return draft;
+  }
+
+  /**
+   * Update draft
+   */
+  async updateDraft(
+    id: string,
+    sellerId: string,
+    updateDraftDto: UpdateDraftDto,
+  ): Promise<ProductDraft> {
+    try {
+      const draft = await this.getDraftById(id, sellerId);
+
+      Object.assign(draft, updateDraftDto);
+
+      return await this.productDraftsRepository.save(draft);
+    } catch (error) {
+      if (error instanceof NotFoundException) {
+        throw error;
+      }
+      throw new ForbiddenException('Failed to update draft');
+    }
+  }
+
+  /**
+   * Delete draft
+   */
+  async deleteDraft(id: string, sellerId: string): Promise<void> {
+    const draft = await this.getDraftById(id, sellerId);
+    await this.productDraftsRepository.remove(draft);
+  }
+
+  /**
+   * Publish draft (convert draft to product)
+   */
+  async publishDraft(
+    draftId: string,
+    sellerId: string,
+    publishData?: PublishDraftDto,
+  ): Promise<Product> {
+    try {
+      const draft = await this.getDraftById(draftId, sellerId);
+
+      // Use publish data if provided, otherwise use draft data
+      const productData = publishData || {
+        title: draft.title,
+        description: draft.description,
+        price: draft.price,
+        condition: draft.condition,
+        quantity: draft.quantity,
+        categoryId: draft.categoryId,
+        images: draft.images,
+        tags: draft.tags,
+      };
+
+      // Validate required fields
+      if (
+        !productData.title ||
+        !productData.description ||
+        !productData.price ||
+        !productData.condition
+      ) {
+        throw new ForbiddenException(
+          'Cannot publish incomplete draft. Missing required fields: title, description, price, or condition',
+        );
+      }
+
+      // Create product from draft
+      const product = this.productsRepository.create({
+        sellerId,
+        title: productData.title,
+        description: productData.description,
+        price: productData.price,
+        condition: productData.condition,
+        quantity: productData.quantity || 1,
+        categoryId: productData.categoryId,
+      });
+
+      const savedProduct = await this.productsRepository.save(product);
+
+      // Add images if provided
+      if (productData.images && productData.images.length > 0) {
+        const images = productData.images.map((imageUrl, index) =>
+          this.productImagesRepository.create({
+            productId: savedProduct.id,
+            imageUrl,
+            isPrimary: index === 0,
+            sortOrder: index,
+          }),
+        );
+
+        await this.productImagesRepository.save(images);
+        savedProduct.images = images;
+      }
+
+      // Delete the draft after successful publication
+      await this.productDraftsRepository.remove(draft);
+
+      return savedProduct;
+    } catch (error) {
+      if (
+        error instanceof NotFoundException ||
+        error instanceof ForbiddenException
+      ) {
+        throw error;
+      }
+      throw new ForbiddenException('Failed to publish draft');
+    }
+  }
+
+  /**
+   * Get draft statistics
+   */
+  async getDraftStats(sellerId: string): Promise<{
+    totalDrafts: number;
+    completeDrafts: number;
+    incompleteDrafts: number;
+  }> {
+    const drafts = await this.productDraftsRepository.find({
+      where: { sellerId },
+    });
+
+    const completeDrafts = drafts.filter(
+      (draft) =>
+        draft.title && draft.description && draft.price && draft.condition,
+    );
+
+    return {
+      totalDrafts: drafts.length,
+      completeDrafts: completeDrafts.length,
+      incompleteDrafts: drafts.length - completeDrafts.length,
+    };
+  }
+
+  /**
+   * Auto-save draft (upsert operation)
+   * Creates if doesn't exist, updates if exists
+   */
+  async autoSaveDraft(
+    sellerId: string,
+    draftId: string | null,
+    draftData: CreateDraftDto | UpdateDraftDto,
+  ): Promise<ProductDraft> {
+    try {
+      if (draftId) {
+        // Update existing draft
+        return await this.updateDraft(draftId, sellerId, draftData);
+      } else {
+        // Create new draft
+        return await this.createDraft(sellerId, draftData as CreateDraftDto);
+      }
+    } catch (error) {
+      if (error instanceof NotFoundException) {
+        // If draft not found, create new one
+        return await this.createDraft(sellerId, draftData as CreateDraftDto);
+      }
+      throw error;
+    }
   }
 
   async getRecommendedProducts(
