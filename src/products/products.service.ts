@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-unused-vars */
 // src/products/products.service.ts
 import {
   Injectable,
@@ -206,16 +207,68 @@ export class ProductsService {
     sellerId: string,
     page: number = 1,
     limit: number = 10,
-  ): Promise<{ data: Product[]; total: number }> {
-    const [products, total] = await this.productsRepository.findAndCount({
-      where: { sellerId },
-      relations: ['category', 'images'],
-      skip: (page - 1) * limit,
-      take: limit,
-      order: { createdAt: 'DESC' },
-    });
+    status: 'all' | 'active' | 'inactive' = 'all',
+  ): Promise<{
+    data: Product[];
+    total: number;
+    page: number;
+    limit: number;
+    stats: {
+      totalProducts: number;
+      activeProducts: number;
+      inactiveProducts: number;
+      totalViews: number;
+    };
+  }> {
+    try {
+      const validPage = page < 1 ? 1 : page;
+      const validLimit = limit < 1 || limit > 100 ? 10 : limit;
 
-    return { data: products, total };
+      // Build where condition based on status
+      const where: any = { sellerId };
+
+      if (status === 'active') {
+        where.isAvailable = true;
+      } else if (status === 'inactive') {
+        where.isAvailable = false;
+      }
+
+      const [products, total] = await this.productsRepository.findAndCount({
+        where,
+        relations: ['category', 'images'],
+        skip: (validPage - 1) * validLimit,
+        take: validLimit,
+        order: { createdAt: 'DESC' },
+      });
+
+      // Get full stats (all products, not just current page)
+      const allProducts = await this.productsRepository.find({
+        where: { sellerId },
+        select: ['isAvailable', 'viewCount'],
+      });
+
+      const activeProducts = allProducts.filter((p) => p.isAvailable).length;
+      const inactiveProducts = allProducts.filter((p) => !p.isAvailable).length;
+      const totalViews = allProducts.reduce(
+        (sum, p) => sum + (p.viewCount || 0),
+        0,
+      );
+
+      return {
+        data: products,
+        total,
+        page: validPage,
+        limit: validLimit,
+        stats: {
+          totalProducts: allProducts.length,
+          activeProducts,
+          inactiveProducts,
+          totalViews,
+        },
+      };
+    } catch (error) {
+      throw new NotFoundException('Failed to fetch user products');
+    }
   }
 
   async update(
@@ -467,16 +520,16 @@ export class ProductsService {
     try {
       const draft = await this.getDraftById(draftId, sellerId);
 
-      // Use publish data if provided, otherwise use draft data
-      const productData = publishData || {
-        title: draft.title,
-        description: draft.description,
-        price: draft.price,
-        condition: draft.condition,
-        quantity: draft.quantity,
-        categoryId: draft.categoryId,
-        images: draft.images,
-        tags: draft.tags,
+      // Merge publish data with draft data (publish data overrides draft)
+      const productData = {
+        title: publishData?.title ?? draft.title,
+        description: publishData?.description ?? draft.description,
+        price: publishData?.price ?? draft.price,
+        condition: publishData?.condition ?? draft.condition,
+        quantity: publishData?.quantity ?? draft.quantity ?? 1,
+        categoryId: publishData?.categoryId ?? draft.categoryId,
+        images: publishData?.images ?? draft.images,
+        tags: publishData?.tags ?? draft.tags,
       };
 
       // Validate required fields

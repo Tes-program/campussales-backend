@@ -46,8 +46,9 @@ export class UserProfile {
   @Column({ type: 'text', nullable: true })
   bio?: string;
 
-  @Column({ type: 'simple-array', nullable: true })
-  interest?: string[];
+  // ✅ FIX: Rename from 'interest' to 'interests' (plural)
+  @Column({ type: 'simple-array', nullable: true, name: 'interest' }) // Keep DB column as 'interest'
+  interests?: string[]; // ✅ Use 'interests' in code
 
   @CreateDateColumn()
   createdAt: Date;

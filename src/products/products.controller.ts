@@ -13,12 +13,14 @@ import {
   Logger,
   HttpCode,
   HttpStatus,
+  ValidationPipe,
 } from '@nestjs/common';
 import {
   ApiTags,
   ApiOperation,
   ApiResponse,
   ApiBearerAuth,
+  ApiQuery,
 } from '@nestjs/swagger';
 import { ProductsService } from './products.service';
 import { CreateProductDto } from './dto/create-product.dto';
@@ -89,87 +91,37 @@ export class ProductsController {
     return await this.productsService.getRecommendedProducts(user.id, limit);
   }
 
+  // --- Static & draft routes BEFORE parameterized :id routes ---
+
   @Get('my-products')
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Get current user products' })
+  @ApiQuery({ name: 'page', required: false, example: 1 })
+  @ApiQuery({ name: 'limit', required: false, example: 10 })
+  @ApiQuery({
+    name: 'status',
+    required: false,
+    enum: ['all', 'active', 'inactive'],
+    example: 'all',
+  })
   @ApiResponse({ status: 200, description: 'User products retrieved' })
   @ApiResponse({ status: 401, description: 'Unauthorized' })
   async getMyProducts(
     @CurrentUser() user: User,
     @Query('page') page: number = 1,
     @Query('limit') limit: number = 10,
+    @Query('status') status: 'all' | 'active' | 'inactive' = 'all',
   ) {
-    this.logger.log(`User ${user.id} fetching own products`);
-    return await this.productsService.findBySeller(user.id, page, limit);
-  }
-
-  @Get(':id')
-  @ApiOperation({ summary: 'Get product by ID' })
-  @ApiResponse({ status: 200, description: 'Product found' })
-  @ApiResponse({ status: 404, description: 'Product not found' })
-  @ApiResponse({ status: 400, description: 'Invalid product ID format' })
-  async findOne(@Param('id', ParseUUIDPipe) id: string) {
-    this.logger.log(`Fetching product with ID: ${id}`);
-    return await this.productsService.findOne(id);
-  }
-
-  @Patch(':id')
-  @UseGuards(JwtAuthGuard)
-  @ApiBearerAuth()
-  @ApiOperation({ summary: 'Update product' })
-  @ApiResponse({ status: 200, description: 'Product updated successfully' })
-  @ApiResponse({
-    status: 403,
-    description: 'Forbidden - Not the product owner',
-  })
-  @ApiResponse({ status: 404, description: 'Product not found' })
-  @ApiResponse({ status: 401, description: 'Unauthorized' })
-  async update(
-    @Param('id', ParseUUIDPipe) id: string,
-    @CurrentUser() user: User,
-    @Body() updateProductDto: UpdateProductDto,
-  ) {
-    this.logger.log(`User ${user.id} updating product: ${id}`);
-    return await this.productsService.update(id, user.id, updateProductDto);
-  }
-
-  @Patch(':id/unavailable')
-  @UseGuards(JwtAuthGuard)
-  @ApiBearerAuth()
-  @ApiOperation({ summary: 'Mark product as unavailable' })
-  @ApiResponse({ status: 200, description: 'Product marked as unavailable' })
-  @ApiResponse({
-    status: 403,
-    description: 'Forbidden - Not the product owner',
-  })
-  @ApiResponse({ status: 404, description: 'Product not found' })
-  async markAsUnavailable(
-    @Param('id', ParseUUIDPipe) id: string,
-    @CurrentUser() user: User,
-  ) {
-    this.logger.log(`User ${user.id} marking product ${id} as unavailable`);
-    return await this.productsService.markAsUnavailable(id, user.id);
-  }
-
-  @Delete(':id')
-  @UseGuards(JwtAuthGuard)
-  @ApiBearerAuth()
-  @HttpCode(HttpStatus.NO_CONTENT)
-  @ApiOperation({ summary: 'Delete product' })
-  @ApiResponse({ status: 204, description: 'Product deleted successfully' })
-  @ApiResponse({
-    status: 403,
-    description: 'Forbidden - Not the product owner',
-  })
-  @ApiResponse({ status: 404, description: 'Product not found' })
-  @ApiResponse({ status: 401, description: 'Unauthorized' })
-  async remove(
-    @Param('id', ParseUUIDPipe) id: string,
-    @CurrentUser() user: User,
-  ) {
-    this.logger.log(`User ${user.id} deleting product: ${id}`);
-    await this.productsService.remove(id, user.id);
+    this.logger.log(
+      `User ${user.id} fetching own products (status: ${status})`,
+    );
+    return await this.productsService.findBySeller(
+      user.id,
+      page,
+      limit,
+      status,
+    );
   }
 
   @Post('drafts')
@@ -184,6 +136,24 @@ export class ProductsController {
   ): Promise<ProductDraft> {
     this.logger.log(`User ${user.id} creating product draft`);
     return await this.productsService.createDraft(user.id, createDraftDto);
+  }
+
+  @Post('drafts/auto-save')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Auto-save draft (create or update)' })
+  @ApiResponse({ status: 200, description: 'Draft auto-saved successfully' })
+  @ApiResponse({ status: 401, description: 'Unauthorized' })
+  async autoSaveDraft(
+    @CurrentUser() user: User,
+    @Body() body: { draftId?: string; data: CreateDraftDto | UpdateDraftDto },
+  ): Promise<ProductDraft> {
+    this.logger.log(`User ${user.id} auto-saving draft`);
+    return await this.productsService.autoSaveDraft(
+      user.id,
+      body.draftId || null,
+      body.data,
+    );
   }
 
   @Get('drafts')
@@ -272,7 +242,8 @@ export class ProductsController {
   async publishDraft(
     @CurrentUser() user: User,
     @Param('id', ParseUUIDPipe) id: string,
-    @Body() publishDraftDto?: PublishDraftDto,
+    @Body(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: false }))
+    publishDraftDto?: PublishDraftDto,
   ): Promise<Product> {
     this.logger.log(`User ${user.id} publishing draft ${id}`);
     return await this.productsService.publishDraft(
@@ -282,21 +253,73 @@ export class ProductsController {
     );
   }
 
-  @Post('drafts/auto-save')
+  // --- Parameterized :id routes LAST ---
+
+  @Get(':id')
+  @ApiOperation({ summary: 'Get product by ID' })
+  @ApiResponse({ status: 200, description: 'Product found' })
+  @ApiResponse({ status: 404, description: 'Product not found' })
+  @ApiResponse({ status: 400, description: 'Invalid product ID format' })
+  async findOne(@Param('id', ParseUUIDPipe) id: string) {
+    this.logger.log(`Fetching product with ID: ${id}`);
+    return await this.productsService.findOne(id);
+  }
+
+  @Patch(':id')
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
-  @ApiOperation({ summary: 'Auto-save draft (create or update)' })
-  @ApiResponse({ status: 200, description: 'Draft auto-saved successfully' })
+  @ApiOperation({ summary: 'Update product' })
+  @ApiResponse({ status: 200, description: 'Product updated successfully' })
+  @ApiResponse({
+    status: 403,
+    description: 'Forbidden - Not the product owner',
+  })
+  @ApiResponse({ status: 404, description: 'Product not found' })
   @ApiResponse({ status: 401, description: 'Unauthorized' })
-  async autoSaveDraft(
+  async update(
+    @Param('id', ParseUUIDPipe) id: string,
     @CurrentUser() user: User,
-    @Body() body: { draftId?: string; data: CreateDraftDto | UpdateDraftDto },
-  ): Promise<ProductDraft> {
-    this.logger.log(`User ${user.id} auto-saving draft`);
-    return await this.productsService.autoSaveDraft(
-      user.id,
-      body.draftId || null,
-      body.data,
-    );
+    @Body() updateProductDto: UpdateProductDto,
+  ) {
+    this.logger.log(`User ${user.id} updating product: ${id}`);
+    return await this.productsService.update(id, user.id, updateProductDto);
+  }
+
+  @Patch(':id/unavailable')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Mark product as unavailable' })
+  @ApiResponse({ status: 200, description: 'Product marked as unavailable' })
+  @ApiResponse({
+    status: 403,
+    description: 'Forbidden - Not the product owner',
+  })
+  @ApiResponse({ status: 404, description: 'Product not found' })
+  async markAsUnavailable(
+    @Param('id', ParseUUIDPipe) id: string,
+    @CurrentUser() user: User,
+  ) {
+    this.logger.log(`User ${user.id} marking product ${id} as unavailable`);
+    return await this.productsService.markAsUnavailable(id, user.id);
+  }
+
+  @Delete(':id')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @ApiOperation({ summary: 'Delete product' })
+  @ApiResponse({ status: 204, description: 'Product deleted successfully' })
+  @ApiResponse({
+    status: 403,
+    description: 'Forbidden - Not the product owner',
+  })
+  @ApiResponse({ status: 404, description: 'Product not found' })
+  @ApiResponse({ status: 401, description: 'Unauthorized' })
+  async remove(
+    @Param('id', ParseUUIDPipe) id: string,
+    @CurrentUser() user: User,
+  ) {
+    this.logger.log(`User ${user.id} deleting product: ${id}`);
+    await this.productsService.remove(id, user.id);
   }
 }

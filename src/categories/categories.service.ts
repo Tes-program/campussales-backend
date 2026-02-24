@@ -41,7 +41,6 @@ export class CategoriesService {
     return await this.categoriesRepository.find({
       where: whereCondition,
       order: { name: 'ASC' },
-      relations: ['products'],
     });
   }
 

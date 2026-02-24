@@ -38,6 +38,11 @@ export class UpdateUserProfileDto {
   @IsUUID()
   universityId?: string;
 
+  @ApiProperty({ example: 'University of Example', required: false })
+  @IsOptional()
+  @IsString()
+  universityName?: string;
+
   @ApiProperty({ example: 'Computer Science', required: false })
   @IsOptional()
   @IsString()

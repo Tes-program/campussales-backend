@@ -9,39 +9,50 @@ import {
   IsUUID,
   Min,
   MaxLength,
-  IsNotEmpty,
 } from 'class-validator';
 import { ProductCondition } from '../entities/product.entity';
 
+/**
+ * DTO for publishing a draft.
+ * All fields are optional - if not provided, draft data will be used.
+ * Use this to override specific fields from the draft before publishing.
+ */
 export class PublishDraftDto {
-  @ApiProperty({ example: 'iPhone 13 Pro Max' })
+  @ApiProperty({ example: 'iPhone 13 Pro Max', required: false })
+  @IsOptional()
   @IsString()
-  @IsNotEmpty()
   @MaxLength(200)
-  title: string;
+  title?: string;
 
-  @ApiProperty({ example: 'Excellent condition, barely used for 6 months' })
+  @ApiProperty({
+    example: 'Excellent condition, barely used for 6 months',
+    required: false,
+  })
+  @IsOptional()
   @IsString()
-  @IsNotEmpty()
   @MaxLength(2000)
-  description: string;
+  description?: string;
 
-  @ApiProperty({ example: 450000.0 })
+  @ApiProperty({ example: 450000.0, required: false })
+  @IsOptional()
   @IsNumber()
   @Min(0)
-  @IsNotEmpty()
-  price: number;
+  price?: number;
 
-  @ApiProperty({ enum: ProductCondition, example: ProductCondition.LIKE_NEW })
+  @ApiProperty({
+    enum: ProductCondition,
+    example: ProductCondition.LIKE_NEW,
+    required: false,
+  })
+  @IsOptional()
   @IsEnum(ProductCondition)
-  @IsNotEmpty()
-  condition: ProductCondition;
+  condition?: ProductCondition;
 
-  @ApiProperty({ example: 1, default: 1 })
+  @ApiProperty({ example: 1, default: 1, required: false })
   @IsOptional()
   @IsNumber()
   @Min(1)
-  quantity?: number = 1;
+  quantity?: number;
 
   @ApiProperty({ required: false })
   @IsOptional()

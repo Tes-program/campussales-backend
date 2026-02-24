@@ -10,6 +10,7 @@ import { WishlistModule } from './wishlist/wishlist.module';
 import { CategoriesModule } from './categories/categories.module';
 import { UniversitiesModule } from './universities/universities.module';
 import { UploadsModule } from './uploads/uploads.module';
+import { ChatModule } from './chat/chat.module';
 
 @Module({
   imports: [
@@ -54,6 +55,7 @@ import { UploadsModule } from './uploads/uploads.module';
     CategoriesModule,
     UniversitiesModule,
     UploadsModule,
+    ChatModule,
   ],
 })
 export class AppModule {}
