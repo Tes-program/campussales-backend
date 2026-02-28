@@ -33,8 +33,9 @@ async function bootstrap() {
   app.use(compression());
 
   // CORS
+  const corsOrigins = configService.get<string>('CORS_ORIGIN');
   app.enableCors({
-    origin: configService.get<string[]>('CORS_ORIGIN') || [], // Add your frontend URLs
+    origin: corsOrigins ? corsOrigins.split(',').map((o) => o.trim()) : [],
     credentials: true,
   });
 
