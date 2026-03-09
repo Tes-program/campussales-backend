@@ -14,6 +14,7 @@ import { unlink } from 'fs/promises';
 import { join } from 'path';
 import { existsSync } from 'fs';
 import { getBaseUrl } from './storage.config';
+import { UsersService } from '../users/user.service';
 
 @Injectable()
 export class UploadsService {
@@ -23,6 +24,7 @@ export class UploadsService {
     @InjectRepository(Upload)
     private uploadsRepository: Repository<Upload>,
     private configService: ConfigService,
+    private usersService: UsersService,
   ) {}
 
   /**
@@ -62,6 +64,22 @@ export class UploadsService {
 
     const savedUpload = await this.uploadsRepository.save(upload);
     this.logger.log(`Upload saved: ${savedUpload.id} for user ${userId}`);
+
+    // Auto-update user profile picture when uploading an avatar
+    if (uploadType === UploadType.PROFILE_AVATAR) {
+      try {
+        await this.usersService.update(userId, {
+          profile: { profilePictureUrl: savedUpload.url },
+        });
+        this.logger.log(
+          `Auto-updated profile picture for user ${userId}`,
+        );
+      } catch (error) {
+        this.logger.warn(
+          `Failed to auto-update profile picture for user ${userId}: ${error.message}`,
+        );
+      }
+    }
 
     return savedUpload;
   }

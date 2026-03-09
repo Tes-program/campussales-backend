@@ -207,7 +207,7 @@ export class ProductsService {
     sellerId: string,
     page: number = 1,
     limit: number = 10,
-    status: 'all' | 'active' | 'inactive' = 'all',
+    status: 'all' | 'active' | 'inactive' | 'sold' = 'all',
   ): Promise<{
     data: Product[];
     total: number;
@@ -217,6 +217,7 @@ export class ProductsService {
       totalProducts: number;
       activeProducts: number;
       inactiveProducts: number;
+      soldProducts: number;
       totalViews: number;
     };
   }> {
@@ -229,8 +230,12 @@ export class ProductsService {
 
       if (status === 'active') {
         where.isAvailable = true;
+        where.isSold = false;
       } else if (status === 'inactive') {
         where.isAvailable = false;
+        where.isSold = false;
+      } else if (status === 'sold') {
+        where.isSold = true;
       }
 
       const [products, total] = await this.productsRepository.findAndCount({
@@ -244,11 +249,16 @@ export class ProductsService {
       // Get full stats (all products, not just current page)
       const allProducts = await this.productsRepository.find({
         where: { sellerId },
-        select: ['isAvailable', 'viewCount'],
+        select: ['isAvailable', 'isSold', 'viewCount'],
       });
 
-      const activeProducts = allProducts.filter((p) => p.isAvailable).length;
-      const inactiveProducts = allProducts.filter((p) => !p.isAvailable).length;
+      const activeProducts = allProducts.filter(
+        (p) => p.isAvailable && !p.isSold,
+      ).length;
+      const inactiveProducts = allProducts.filter(
+        (p) => !p.isAvailable && !p.isSold,
+      ).length;
+      const soldProducts = allProducts.filter((p) => p.isSold).length;
       const totalViews = allProducts.reduce(
         (sum, p) => sum + (p.viewCount || 0),
         0,
@@ -263,6 +273,7 @@ export class ProductsService {
           totalProducts: allProducts.length,
           activeProducts,
           inactiveProducts,
+          soldProducts,
           totalViews,
         },
       };
@@ -386,8 +397,58 @@ export class ProductsService {
       );
     }
 
+    // Toggle isAvailable
+    product.isAvailable = !product.isAvailable;
+    return await this.productsRepository.save(product);
+  }
+
+  /**
+   * Mark product as sold
+   */
+  async markAsSold(id: string, userId: string): Promise<Product> {
+    if (!id || !userId) {
+      throw new ForbiddenException('Product ID and User ID are required');
+    }
+
+    const product = await this.productsRepository.findOne({ where: { id } });
+
+    if (!product) {
+      throw new NotFoundException('Product not found');
+    }
+
+    if (product.sellerId !== userId) {
+      throw new ForbiddenException(
+        'You do not have permission to modify this product',
+      );
+    }
+
+    product.isSold = true;
     product.isAvailable = false;
     return await this.productsRepository.save(product);
+  }
+
+  /**
+   * Get product stats for seller
+   */
+  async getMyProductStats(
+    sellerId: string,
+  ): Promise<{
+    total: number;
+    active: number;
+    inactive: number;
+    sold: number;
+  }> {
+    const products = await this.productsRepository.find({
+      where: { sellerId },
+      select: ['isAvailable', 'isSold'],
+    });
+
+    return {
+      total: products.length,
+      active: products.filter((p) => p.isAvailable && !p.isSold).length,
+      inactive: products.filter((p) => !p.isAvailable && !p.isSold).length,
+      sold: products.filter((p) => p.isSold).length,
+    };
   }
 
   async getFeaturedProducts(limit: number = 10): Promise<Product[]> {

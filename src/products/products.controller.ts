@@ -102,7 +102,7 @@ export class ProductsController {
   @ApiQuery({
     name: 'status',
     required: false,
-    enum: ['all', 'active', 'inactive'],
+    enum: ['all', 'active', 'inactive', 'sold'],
     example: 'all',
   })
   @ApiResponse({ status: 200, description: 'User products retrieved' })
@@ -111,7 +111,7 @@ export class ProductsController {
     @CurrentUser() user: User,
     @Query('page') page: number = 1,
     @Query('limit') limit: number = 10,
-    @Query('status') status: 'all' | 'active' | 'inactive' = 'all',
+    @Query('status') status: 'all' | 'active' | 'inactive' | 'sold' = 'all',
   ) {
     this.logger.log(
       `User ${user.id} fetching own products (status: ${status})`,
@@ -122,6 +122,17 @@ export class ProductsController {
       limit,
       status,
     );
+  }
+
+  @Get('my-products/stats')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Get current user product statistics' })
+  @ApiResponse({ status: 200, description: 'Product stats retrieved' })
+  @ApiResponse({ status: 401, description: 'Unauthorized' })
+  async getMyProductStats(@CurrentUser() user: User) {
+    this.logger.log(`User ${user.id} fetching product stats`);
+    return await this.productsService.getMyProductStats(user.id);
   }
 
   @Post('drafts')
@@ -301,6 +312,24 @@ export class ProductsController {
   ) {
     this.logger.log(`User ${user.id} marking product ${id} as unavailable`);
     return await this.productsService.markAsUnavailable(id, user.id);
+  }
+
+  @Patch(':id/sold')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Mark product as sold' })
+  @ApiResponse({ status: 200, description: 'Product marked as sold' })
+  @ApiResponse({
+    status: 403,
+    description: 'Forbidden - Not the product owner',
+  })
+  @ApiResponse({ status: 404, description: 'Product not found' })
+  async markAsSold(
+    @Param('id', ParseUUIDPipe) id: string,
+    @CurrentUser() user: User,
+  ) {
+    this.logger.log(`User ${user.id} marking product ${id} as sold`);
+    return await this.productsService.markAsSold(id, user.id);
   }
 
   @Delete(':id')

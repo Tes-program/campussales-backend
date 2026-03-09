@@ -7,6 +7,7 @@ import { UploadsController } from './uploads.controller';
 import { UploadsService } from './uploads.service';
 import { Upload } from './entities/upload.entitiy';
 import { getStorageConfig } from './storage.config';
+import { UsersModule } from '../users/user.module';
 
 @Module({
   imports: [
@@ -16,6 +17,7 @@ import { getStorageConfig } from './storage.config';
       inject: [ConfigService],
       useFactory: getStorageConfig,
     }),
+    UsersModule,
   ],
   controllers: [UploadsController],
   providers: [UploadsService],

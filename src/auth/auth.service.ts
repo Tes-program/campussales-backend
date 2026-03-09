@@ -4,6 +4,7 @@ import {
   UnauthorizedException,
   ConflictException,
   BadRequestException,
+  Logger,
 } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
@@ -33,6 +34,8 @@ import { ResetPasswordDto } from './dto/reset-password.dto';
 
 @Injectable()
 export class AuthService {
+  private readonly logger = new Logger(AuthService.name);
+
   constructor(
     private usersService: UsersService,
     private jwtService: JwtService,
@@ -391,6 +394,9 @@ export class AuthService {
 
       // Don't reveal if email exists or not (security best practice)
       if (!user) {
+        this.logger.warn(
+          `Password reset requested for non-existent email: ${email}`,
+        );
         return {
           message:
             'If that email exists in our system, a password reset link has been sent.',
@@ -399,7 +405,7 @@ export class AuthService {
 
       // Generate reset token
       const resetToken = randomBytes(32).toString('hex');
-      const tokenHash = await bcrypt.hash(resetToken, 10);
+      const tokenHash = createHash('sha256').update(resetToken).digest('hex');
 
       // Set expiry time (1 hour from now)
       const expiresAt = new Date();
@@ -419,25 +425,24 @@ export class AuthService {
         isUsed: false,
       });
 
+      this.logger.log(`Password reset token saved for user: ${user.id}`);
+
       // Send reset email
-      try {
-        await this.emailService.sendPasswordResetEmail(
-          user.email,
-          resetToken,
-          user.profile?.firstName,
-        );
-      } catch (emailError) {
-        // Log email error but don't expose it to user
-        throw new BadRequestException(
-          'Failed to send reset email. Please try again later',
-        );
-      }
+      await this.emailService.sendPasswordResetEmail(
+        user.email,
+        resetToken,
+        user.profile?.firstName,
+      );
 
       return {
         message:
           'If that email exists in our system, a password reset link has been sent.',
       };
     } catch (error) {
+      this.logger.error(
+        `Failed to process forgot password: ${error.message}`,
+        error.stack,
+      );
       if (error instanceof BadRequestException) {
         throw error;
       }
@@ -467,25 +472,23 @@ export class AuthService {
         );
       }
 
-      // Find all unused, non-expired reset tokens
-      const resetTokens = await this.passwordResetRepository.find({
+      // Hash the incoming token and look it up directly
+      const tokenHash = createHash('sha256').update(token).digest('hex');
+      const matchedReset = await this.passwordResetRepository.findOne({
         where: {
+          token: tokenHash,
           isUsed: false,
         },
         relations: ['user'],
       });
 
-      // Find matching token
-      let matchedReset: PasswordReset | null = null;
-      for (const reset of resetTokens) {
-        const isValid = await bcrypt.compare(token, reset.token);
-        if (isValid && reset.expiresAt > new Date()) {
-          matchedReset = reset;
-          break;
-        }
+      // Check if token is expired
+      if (matchedReset && matchedReset.expiresAt <= new Date()) {
+        matchedReset.isUsed = true;
+        await this.passwordResetRepository.save(matchedReset);
       }
 
-      if (!matchedReset) {
+      if (!matchedReset || matchedReset.expiresAt <= new Date()) {
         throw new BadRequestException(
           'Invalid or expired password reset token. Please request a new one',
         );

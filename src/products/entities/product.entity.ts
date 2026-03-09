@@ -55,6 +55,9 @@ export class Product {
   isAvailable: boolean;
 
   @Column({ default: false })
+  isSold: boolean;
+
+  @Column({ default: false })
   isFeatured: boolean;
 
   @Column({ default: 0 })

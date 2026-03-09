@@ -368,7 +368,15 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
     return onlineStatuses;
   }
 
-  // --- Public method for REST controller to emit socket events ---
+  // --- Public methods for emitting socket events ---
+
+  /**
+   * Push a real-time notification to a specific user.
+   * Uses the user's personal room (`user:<userId>`) established on connection.
+   */
+  emitNotification(userId: string, notification: any) {
+    this.server.to(`user:${userId}`).emit('notification:new', notification);
+  }
 
   emitNewMessage(conversationId: string, message: any) {
     this.server
