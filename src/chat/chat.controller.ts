@@ -12,7 +12,10 @@ import {
   HttpCode,
   HttpStatus,
   Logger,
+  Res,
+  NotFoundException,
 } from '@nestjs/common';
+import type { Response } from 'express';
 import {
   ApiTags,
   ApiOperation,
@@ -46,15 +49,26 @@ export class ChatController {
   @Post('conversations')
   @ApiOperation({ summary: 'Create or get existing conversation' })
   @ApiResponse({ status: 201, description: 'Conversation created' })
+  @ApiResponse({ status: 200, description: 'Existing conversation returned' })
   @ApiResponse({ status: 400, description: 'Invalid data' })
   async createConversation(
     @CurrentUser() user: User,
     @Body() dto: CreateConversationDto,
+    @Res({ passthrough: true }) res: Response,
   ) {
     this.logger.log(
       `User ${user.id} creating conversation with ${dto.participantId}`,
     );
-    return await this.chatService.createConversation(user.id, dto);
+    const { conversation, isExisting } =
+      await this.chatService.createConversation(user.id, dto);
+
+    if (isExisting) {
+      res.status(HttpStatus.OK);
+    } else {
+      res.status(HttpStatus.CREATED);
+    }
+
+    return conversation;
   }
 
   @Get('conversations')
@@ -78,6 +92,26 @@ export class ChatController {
   async getTotalUnreadCount(@CurrentUser() user: User) {
     const count = await this.chatService.getTotalUnreadCount(user.id);
     return { unreadCount: count };
+  }
+
+  @Get('conversations/find')
+  @ApiOperation({
+    summary: 'Find existing conversation with a user without creating one',
+  })
+  @ApiResponse({ status: 200, description: 'Conversation found' })
+  @ApiResponse({ status: 404, description: 'Conversation not found' })
+  async findConversation(
+    @CurrentUser() user: User,
+    @Query('participantId', ParseUUIDPipe) participantId: string,
+  ) {
+    const conversation = await this.chatService.findExistingConversation(
+      user.id,
+      participantId,
+    );
+    if (!conversation) {
+      throw new NotFoundException('Conversation not found');
+    }
+    return conversation;
   }
 
   @Get('conversations/:id')
@@ -154,5 +188,27 @@ export class ChatController {
   ) {
     this.logger.log(`User ${user.id} marking conversation ${id} as read`);
     await this.chatService.markAsRead(id, user.id);
+  }
+
+  // --- Message search ---
+
+  @Get('conversations/:id/messages/search')
+  @ApiOperation({ summary: 'Search messages within a conversation' })
+  @ApiResponse({ status: 200, description: 'Search results returned' })
+  @ApiResponse({ status: 404, description: 'Conversation not found' })
+  async searchMessages(
+    @CurrentUser() user: User,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Query('q') searchTerm: string,
+    @Query('page') page?: number,
+    @Query('limit') limit?: number,
+  ) {
+    return await this.chatService.searchMessages(
+      id,
+      user.id,
+      searchTerm || '',
+      page ? Number(page) : 1,
+      limit ? Number(limit) : 20,
+    );
   }
 }

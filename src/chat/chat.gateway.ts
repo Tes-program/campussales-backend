@@ -4,22 +4,26 @@ import {
   SubscribeMessage,
   OnGatewayConnection,
   OnGatewayDisconnect,
+  OnGatewayInit,
   ConnectedSocket,
   MessageBody,
   WsException,
 } from '@nestjs/websockets';
-import {
-  Logger,
-  UnauthorizedException,
-  UsePipes,
-  ValidationPipe,
-} from '@nestjs/common';
+import { Logger, UsePipes, ValidationPipe } from '@nestjs/common';
 import { Server, Socket } from 'socket.io';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
+import { InjectQueue } from '@nestjs/bullmq';
+import { Queue, QueueEvents } from 'bullmq';
 import { ChatService } from './chat.service';
 import { SendMessageDto } from './dto/send-message.dto';
 import { MessageStatus } from './enums/chat.enums';
+import {
+  SendMessageJobData,
+  MarkReadJobData,
+  DeliveryStatusJobData,
+} from './chat.processor';
+import { FilterConversationsDto } from './dto/filter-conversations.dto';
 
 interface AuthenticatedSocket extends Socket {
   userId: string;
@@ -35,6 +39,9 @@ interface AuthenticatedSocket extends Socket {
     credentials: true,
   },
   namespace: '/chat',
+  pingInterval: 25000,
+  pingTimeout: 60000,
+  transports: ['websocket', 'polling'],
 })
 @UsePipes(
   new ValidationPipe({
@@ -49,58 +56,126 @@ interface AuthenticatedSocket extends Socket {
     },
   }),
 )
-export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
+export class ChatGateway
+  implements OnGatewayConnection, OnGatewayDisconnect, OnGatewayInit
+{
   @WebSocketServer()
   server: Server;
 
   private readonly logger = new Logger(ChatGateway.name);
-  // userId -> Set<socketId>
+
+  /**
+   * userId -> Set<socketId>
+   * Tracks multi-device / multi-tab connections per user.
+   */
   private onlineUsers = new Map<string, Set<string>>();
-  // Typing auto-expiry: `${conversationId}:${userId}` -> timeout handle
+
+  /**
+   * Typing auto-expiry: `${conversationId}:${userId}` -> timeout handle
+   */
   private typingTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private readonly TYPING_TIMEOUT_MS = 5000;
 
+  /**
+   * Simple per-socket rate limiter: socketId -> { count, resetAt }
+   */
+  private rateLimits = new Map<string, { count: number; resetAt: number }>();
+  private readonly RATE_LIMIT_MAX = 30; // messages per window
+  private readonly RATE_LIMIT_WINDOW_MS = 10_000; // 10 seconds
+
+  /** QueueEvents listener (initialised in afterInit) */
+  private queueEvents: QueueEvents | null = null;
+
   constructor(
-    private jwtService: JwtService,
-    private configService: ConfigService,
-    private chatService: ChatService,
+    private readonly jwtService: JwtService,
+    private readonly configService: ConfigService,
+    private readonly chatService: ChatService,
+    @InjectQueue('chat') private readonly chatQueue: Queue,
   ) {}
 
-  // --- Connection lifecycle ---
+  // ─── LIFECYCLE ───────────────────────────────────────────────
+
+  afterInit() {
+    this.logger.log('Chat WebSocket gateway initialised');
+
+    // Listen for completed queue jobs and emit results via Socket.io
+    try {
+      const redisHost = this.configService.get<string>(
+        'REDIS_HOST',
+        'localhost',
+      );
+      const redisPort = this.configService.get<number>('REDIS_PORT', 6379);
+      const redisPassword = this.configService.get<string>('REDIS_PASSWORD');
+
+      this.queueEvents = new QueueEvents('chat', {
+        connection: {
+          host: redisHost,
+          port: redisPort,
+          password: redisPassword || undefined,
+        },
+      });
+
+      this.queueEvents.on('completed', ({ jobId, returnvalue }) => {
+        this.handleJobCompleted(jobId, returnvalue);
+      });
+
+      this.queueEvents.on('failed', ({ jobId, failedReason }) => {
+        this.logger.error(`Job ${jobId} failed: ${failedReason}`);
+      });
+
+      this.logger.log('Queue event listeners attached');
+    } catch (error) {
+      this.logger.error(
+        `Failed to set up queue events: ${error.message}`,
+        error.stack,
+      );
+    }
+  }
+
+  // ─── CONNECTION ──────────────────────────────────────────────
 
   async handleConnection(client: AuthenticatedSocket) {
     try {
-      const token =
-        client.handshake.auth?.token ||
-        client.handshake.headers?.authorization?.replace('Bearer ', '');
-
+      const token = this.extractToken(client);
       if (!token) {
-        throw new UnauthorizedException('No token provided');
+        this.disconnectWithError(client, 'MISSING_TOKEN', 'No token provided');
+        return;
       }
 
       const payload = this.jwtService.verify(token, {
         secret: this.configService.get<string>('JWT_SECRET'),
       });
-
       client.userId = payload.sub;
 
-      // Track online status
+      // Track online status (multi-device aware)
       if (!this.onlineUsers.has(client.userId)) {
         this.onlineUsers.set(client.userId, new Set());
       }
       this.onlineUsers.get(client.userId)!.add(client.id);
 
-      // Join user's personal room for direct notifications
+      // Join personal notification room
       await client.join(`user:${client.userId}`);
 
-      // Broadcast online status
-      this.server.emit('user:online', { userId: client.userId });
+      // Auto-join ALL conversation rooms this user belongs to
+      await this.autoJoinConversations(client);
+
+      // Broadcast online presence to conversation peers
+      this.broadcastPresence(client.userId, 'online');
 
       this.logger.log(`Client connected: ${client.userId} (${client.id})`);
+
+      // Confirm connection to client with useful boot data
+      client.emit('connected', {
+        userId: client.userId,
+        socketId: client.id,
+        onlineUsers: this.getOnlineUserIds(),
+      });
     } catch {
-      this.logger.warn(`Unauthorized connection attempt: ${client.id}`);
-      client.emit('error', { message: 'Unauthorized' });
-      client.disconnect();
+      this.disconnectWithError(
+        client,
+        'AUTH_FAILED',
+        'Invalid or expired token',
+      );
     }
   }
 
@@ -112,21 +187,18 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
       sockets.delete(client.id);
       if (sockets.size === 0) {
         this.onlineUsers.delete(client.userId);
-        // Broadcast offline + lastSeen
-        this.server.emit('user:offline', {
-          userId: client.userId,
-          lastSeen: new Date().toISOString(),
-        });
+        this.broadcastPresence(client.userId, 'offline');
       }
     }
 
-    // Clear any typing timers for this user on disconnect
+    // Clean up typing timers & rate limit state
     this.clearAllTypingTimersForUser(client.userId);
+    this.rateLimits.delete(client.id);
 
     this.logger.log(`Client disconnected: ${client.userId} (${client.id})`);
   }
 
-  // --- Events ---
+  // ─── ROOM MANAGEMENT ────────────────────────────────────────
 
   @SubscribeMessage('conversation:join')
   async handleJoinConversation(
@@ -137,25 +209,21 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
       if (!data?.conversationId) {
         throw new WsException('conversationId is required');
       }
-
-      // Verify the user is a participant before letting them join the room
+      // Verify participant access
       await this.chatService.getConversationById(
         data.conversationId,
         client.userId,
       );
       await client.join(`conversation:${data.conversationId}`);
-      this.logger.log(
-        `User ${client.userId} joined conversation room ${data.conversationId}`,
+      this.logger.debug(
+        `User ${client.userId} joined room ${data.conversationId}`,
       );
       return {
         event: 'conversation:joined',
         data: { conversationId: data.conversationId },
       };
     } catch (error) {
-      this.logger.error(
-        `Error joining conversation: ${error.message}`,
-        error.stack,
-      );
+      this.logger.error(`Join failed: ${error.message}`, error.stack);
       throw new WsException(error.message || 'Failed to join conversation');
     }
   }
@@ -168,7 +236,6 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
     if (!data?.conversationId) {
       throw new WsException('conversationId is required');
     }
-    // Clear typing timer when leaving
     this.clearTypingTimer(data.conversationId, client.userId);
     await client.leave(`conversation:${data.conversationId}`);
     return {
@@ -177,78 +244,78 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
     };
   }
 
+  // ─── MESSAGING (queue-backed) ────────────────────────────────
+
   @SubscribeMessage('message:send')
   async handleSendMessage(
     @ConnectedSocket() client: AuthenticatedSocket,
-    @MessageBody()
-    data: { conversationId: string } & SendMessageDto,
+    @MessageBody() data: { conversationId: string } & SendMessageDto,
   ) {
     try {
       if (!data?.conversationId) {
         throw new WsException('conversationId is required');
       }
 
+      // Rate limit check
+      if (this.isRateLimited(client.id)) {
+        client.emit('message:error', {
+          conversationId: data.conversationId,
+          error: 'Rate limit exceeded. Please slow down.',
+          code: 'RATE_LIMITED',
+        });
+        return;
+      }
+
       const { conversationId, ...messageDto } = data;
 
-      // Normalize type to lowercase to match DB enum values (text, image, file)
-      // Frontend may send "TEXT", "IMAGE", etc. — DB expects lowercase
+      // Normalise type to lowercase (frontend may send "TEXT")
       if (messageDto.type) {
         messageDto.type =
           messageDto.type.toLowerCase() as SendMessageDto['type'];
       }
 
-      const message = await this.chatService.sendMessage(
-        conversationId,
-        client.userId,
-        messageDto,
+      // Enqueue the message for reliable, async processing
+      const job = await this.chatQueue.add(
+        'send-message',
+        {
+          type: 'send-message',
+          conversationId,
+          senderId: client.userId,
+          dto: messageDto,
+          socketId: client.id,
+        } satisfies SendMessageJobData,
+        {
+          attempts: 3,
+          backoff: { type: 'exponential', delay: 1000 },
+          removeOnComplete: 100,
+          removeOnFail: 500,
+        },
       );
 
-      // Clear typing indicator since user sent a message
+      // Immediately clear typing indicator
       this.clearTypingTimer(conversationId, client.userId);
-      client.to(`conversation:${conversationId}`).emit('typing:stop', {
+      client.to(`conversation:${conversationId}`).emit('typing:update', {
         conversationId,
         userId: client.userId,
+        isTyping: false,
       });
 
-      // Emit to all participants in the conversation room
-      this.server
-        .to(`conversation:${conversationId}`)
-        .emit('message:new', message);
-
-      // Notify participants who are NOT in the conversation room (avoids duplicates)
-      const conversation = await this.chatService.getConversationById(
-        conversationId,
-        client.userId,
-      );
-
-      const conversationRoom = `conversation:${conversationId}`;
-      const socketsInRoom = await this.server
-        .in(conversationRoom)
-        .fetchSockets();
-      const userIdsInRoom = new Set(
-        socketsInRoom.map((s) => (s as unknown as AuthenticatedSocket).userId),
-      );
-
-      for (const participant of conversation.participants) {
-        if (
-          participant.userId !== client.userId &&
-          !userIdsInRoom.has(participant.userId)
-        ) {
-          this.server
-            .to(`user:${participant.userId}`)
-            .emit('message:notification', {
-              conversationId,
-              message,
-            });
-        }
-      }
-
-      return message;
+      // Acknowledge receipt to sender (message is queued, not yet persisted)
+      return {
+        event: 'message:queued',
+        data: { jobId: job.id, conversationId },
+      };
     } catch (error) {
-      this.logger.error(`Error sending message: ${error.message}`, error.stack);
-      throw new WsException(error.message || 'Failed to send message');
+      this.logger.error(`Send failed: ${error.message}`, error.stack);
+      client.emit('message:error', {
+        conversationId: data?.conversationId,
+        error: error.message,
+        code: 'SEND_FAILED',
+      });
     }
   }
+
+  // ─── DELIVERY & READ RECEIPTS ───────────────────────────────
 
   @SubscribeMessage('message:delivered')
   async handleMessageDelivered(
@@ -260,22 +327,27 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
         throw new WsException('messageId and conversationId are required');
       }
 
-      const updated = await this.chatService.updateMessageStatus(
-        data.messageId,
-        MessageStatus.DELIVERED,
+      await this.chatQueue.add(
+        'delivery-status',
+        {
+          type: 'delivery-status',
+          messageId: data.messageId,
+          conversationId: data.conversationId,
+          status: MessageStatus.DELIVERED,
+        } satisfies DeliveryStatusJobData,
+        { removeOnComplete: 50, removeOnFail: 200 },
       );
+
+      // Optimistically broadcast status change (processor confirms DB update)
       this.server
         .to(`conversation:${data.conversationId}`)
         .emit('message:status', {
           messageId: data.messageId,
-          status: updated.status,
+          status: MessageStatus.DELIVERED,
         });
     } catch (error) {
-      this.logger.error(
-        `Error updating message status: ${error.message}`,
-        error.stack,
-      );
-      throw new WsException(error.message || 'Failed to update message status');
+      this.logger.error(`Delivery status failed: ${error.message}`);
+      throw new WsException('Failed to update delivery status');
     }
   }
 
@@ -289,22 +361,34 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
         throw new WsException('conversationId is required');
       }
 
-      await this.chatService.markAsRead(data.conversationId, client.userId);
-      this.server
-        .to(`conversation:${data.conversationId}`)
-        .emit('messages:read', {
+      await this.chatQueue.add(
+        'mark-read',
+        {
+          type: 'mark-read',
           conversationId: data.conversationId,
-          readBy: client.userId,
-          readAt: new Date().toISOString(),
-        });
-    } catch (error) {
-      this.logger.error(
-        `Error marking messages as read: ${error.message}`,
-        error.stack,
+          userId: client.userId,
+        } satisfies MarkReadJobData,
+        { removeOnComplete: 50, removeOnFail: 200 },
       );
-      throw new WsException(error.message || 'Failed to mark messages as read');
+
+      // Optimistically notify the sender that their messages were read
+      client.to(`conversation:${data.conversationId}`).emit('messages:read', {
+        conversationId: data.conversationId,
+        readBy: client.userId,
+        readAt: new Date().toISOString(),
+      });
+
+      return {
+        event: 'message:read:ack',
+        data: { conversationId: data.conversationId },
+      };
+    } catch (error) {
+      this.logger.error(`Mark read failed: ${error.message}`);
+      throw new WsException('Failed to mark as read');
     }
   }
+
+  // ─── TYPING INDICATORS ──────────────────────────────────────
 
   @SubscribeMessage('typing:start')
   handleTypingStart(
@@ -313,23 +397,22 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
   ) {
     if (!data?.conversationId) return;
 
-    const timerKey = `${data.conversationId}:${client.userId}`;
-
-    // Clear any existing timer
+    // Clear existing timer and reset
     this.clearTypingTimer(data.conversationId, client.userId);
 
-    // Broadcast typing start
-    client.to(`conversation:${data.conversationId}`).emit('typing:start', {
+    client.to(`conversation:${data.conversationId}`).emit('typing:update', {
       conversationId: data.conversationId,
       userId: client.userId,
+      isTyping: true,
     });
 
-    // Set auto-expiry: if no typing:stop within TYPING_TIMEOUT_MS,
-    // automatically emit typing:stop to prevent "typing forever" on disconnect/crash
+    // Auto-stop after TYPING_TIMEOUT_MS if client doesn't send typing:stop
+    const timerKey = `${data.conversationId}:${client.userId}`;
     const timer = setTimeout(() => {
-      client.to(`conversation:${data.conversationId}`).emit('typing:stop', {
+      client.to(`conversation:${data.conversationId}`).emit('typing:update', {
         conversationId: data.conversationId,
         userId: client.userId,
+        isTyping: false,
       });
       this.typingTimers.delete(timerKey);
     }, this.TYPING_TIMEOUT_MS);
@@ -346,44 +429,51 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
     this.clearTypingTimer(data.conversationId, client.userId);
 
-    client.to(`conversation:${data.conversationId}`).emit('typing:stop', {
+    client.to(`conversation:${data.conversationId}`).emit('typing:update', {
       conversationId: data.conversationId,
       userId: client.userId,
+      isTyping: false,
     });
   }
 
+  // ─── PRESENCE ────────────────────────────────────────────────
+
   @SubscribeMessage('user:check-online')
   handleCheckOnline(
-    @ConnectedSocket() client: AuthenticatedSocket,
+    @ConnectedSocket() _client: AuthenticatedSocket,
     @MessageBody() data: { userIds: string[] },
   ) {
     if (!data?.userIds || !Array.isArray(data.userIds)) {
       throw new WsException('userIds array is required');
     }
 
-    const onlineStatuses = data.userIds.map((id) => ({
+    return data.userIds.map((id) => ({
       userId: id,
       isOnline: this.onlineUsers.has(id),
     }));
-    return onlineStatuses;
   }
 
-  // --- Public methods for emitting socket events ---
+  // ─── PUBLIC EMITTERS (called from ChatController) ────────────
 
   /**
-   * Push a real-time notification to a specific user.
-   * Uses the user's personal room (`user:<userId>`) established on connection.
+   * Push a notification payload to a specific user's personal room.
    */
   emitNotification(userId: string, notification: any) {
     this.server.to(`user:${userId}`).emit('notification:new', notification);
   }
 
+  /**
+   * Emit a new message to all sockets in a conversation room.
+   */
   emitNewMessage(conversationId: string, message: any) {
     this.server
       .to(`conversation:${conversationId}`)
       .emit('message:new', message);
   }
 
+  /**
+   * Send a notification to participants NOT currently in the conversation room.
+   */
   async emitMessageNotification(
     conversationId: string,
     senderId: string,
@@ -415,7 +505,161 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
     }
   }
 
-  // --- Private helpers ---
+  // ─── PRIVATE HELPERS ─────────────────────────────────────────
+
+  private extractToken(client: Socket): string | null {
+    const authHeader = client.handshake.headers?.authorization;
+    if (authHeader?.startsWith('Bearer ')) return authHeader.slice(7);
+    return (
+      (client.handshake.auth?.token as string) ||
+      (client.handshake.query?.token as string) ||
+      null
+    );
+  }
+
+  private disconnectWithError(client: Socket, code: string, message: string) {
+    this.logger.warn(`Disconnecting ${client.id}: ${message}`);
+    client.emit('error:auth', { code, message });
+    client.disconnect(true);
+  }
+
+  /**
+   * Auto-join all conversation rooms the user participates in.
+   * This ensures they receive messages even when they haven't opened a specific chat.
+   */
+  private async autoJoinConversations(client: AuthenticatedSocket) {
+    try {
+      const filterDto = new FilterConversationsDto();
+      filterDto.page = 1;
+      filterDto.limit = 500;
+      const result = await this.chatService.getConversations(
+        client.userId,
+        filterDto,
+      );
+      for (const conv of result.data) {
+        await client.join(`conversation:${conv.id}`);
+      }
+      this.logger.debug(
+        `User ${client.userId} auto-joined ${result.data.length} rooms`,
+      );
+    } catch (error) {
+      this.logger.error(`Auto-join failed: ${error.message}`);
+    }
+  }
+
+  /**
+   * Broadcast presence change to all conversation rooms this user is in.
+   * With the Redis adapter this works across all server instances.
+   */
+  private broadcastPresence(userId: string, status: 'online' | 'offline') {
+    const payload = {
+      userId,
+      status,
+      lastSeen: status === 'offline' ? new Date().toISOString() : null,
+    };
+
+    // Emit to the user's personal room (their own tabs pick it up)
+    this.server.to(`user:${userId}`).emit('presence:update', payload);
+
+    // Also broadcast globally so any conversation partner listening gets it
+    this.server.emit('presence:update', payload);
+  }
+
+  /**
+   * Simple sliding-window rate limiter per socket.
+   */
+  private isRateLimited(socketId: string): boolean {
+    const now = Date.now();
+    const entry = this.rateLimits.get(socketId);
+
+    if (!entry || now > entry.resetAt) {
+      this.rateLimits.set(socketId, {
+        count: 1,
+        resetAt: now + this.RATE_LIMIT_WINDOW_MS,
+      });
+      return false;
+    }
+
+    entry.count++;
+    return entry.count > this.RATE_LIMIT_MAX;
+  }
+
+  /**
+   * Handle completed queue jobs — emit results to Socket.io rooms.
+   */
+  private handleJobCompleted(jobId: string, returnvalue: any) {
+    try {
+      const result =
+        typeof returnvalue === 'string' ? JSON.parse(returnvalue) : returnvalue;
+
+      if (!result) return;
+
+      if (result.message && result.conversationId) {
+        // send-message job completed — broadcast to conversation room
+        this.server
+          .to(`conversation:${result.conversationId}`)
+          .emit('message:new', result.message);
+
+        // Notify offline participants via personal rooms
+        void this.notifyOfflineParticipants(
+          result.conversationId,
+          result.senderId,
+          result.message,
+        );
+
+        // Emit conversation:updated for sidebar refresh
+        this.server
+          .to(`conversation:${result.conversationId}`)
+          .emit('conversation:updated', {
+            conversationId: result.conversationId,
+            lastMessage: {
+              id: result.message.id,
+              content: result.message.content,
+              type: result.message.type,
+              senderId: result.message.senderId,
+              status: result.message.status,
+              createdAt: result.message.createdAt,
+            },
+            updatedAt: result.message.createdAt,
+          });
+      }
+    } catch (error) {
+      this.logger.error(
+        `Error handling job ${jobId} completion: ${error.message}`,
+      );
+    }
+  }
+
+  private async notifyOfflineParticipants(
+    conversationId: string,
+    senderId: string,
+    message: any,
+  ) {
+    try {
+      const conversationRoom = `conversation:${conversationId}`;
+      const socketsInRoom = await this.server
+        .in(conversationRoom)
+        .fetchSockets();
+      const userIdsInRoom = new Set(
+        socketsInRoom.map((s) => (s as unknown as AuthenticatedSocket).userId),
+      );
+
+      const conversation = await this.chatService.getConversationById(
+        conversationId,
+        senderId,
+      );
+
+      for (const p of conversation.participants) {
+        if (p.userId !== senderId && !userIdsInRoom.has(p.userId)) {
+          this.server
+            .to(`user:${p.userId}`)
+            .emit('message:notification', { conversationId, message });
+        }
+      }
+    } catch (error) {
+      this.logger.error(`Offline notification failed: ${error.message}`);
+    }
+  }
 
   private clearTypingTimer(conversationId: string, userId: string) {
     const timerKey = `${conversationId}:${userId}`;
@@ -432,12 +676,15 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
         clearTimeout(timer);
         this.typingTimers.delete(key);
 
-        // Notify conversation rooms that this user stopped typing
         const conversationId = key.split(':')[0];
         this.server
           .to(`conversation:${conversationId}`)
-          .emit('typing:stop', { conversationId, userId });
+          .emit('typing:update', { conversationId, userId, isTyping: false });
       }
     }
+  }
+
+  private getOnlineUserIds(): string[] {
+    return Array.from(this.onlineUsers.keys());
   }
 }

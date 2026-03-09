@@ -22,6 +22,7 @@ import {
   MessageType,
   ConversationType,
 } from './enums/chat.enums';
+import { NotificationsService } from '../notifications/notifications.service';
 
 @Injectable()
 export class ChatService {
@@ -34,31 +35,45 @@ export class ChatService {
     private participantRepo: Repository<ConversationParticipant>,
     @InjectRepository(Message)
     private messageRepo: Repository<Message>,
+    private readonly notificationsService: NotificationsService,
   ) {}
 
+  /**
+   * Find or create a conversation between two users.
+   * One conversation per user pair (WhatsApp model).
+   * productId is passed through for the frontend to use when sending the first message.
+   */
   async createConversation(
     userId: string,
     dto: CreateConversationDto,
-  ): Promise<Conversation> {
+  ): Promise<{
+    conversation: Conversation;
+    isExisting: boolean;
+    productId?: string;
+  }> {
     if (userId === dto.participantId) {
-      throw new BadRequestException('Cannot create a conversation with yourself');
+      throw new BadRequestException(
+        'You cannot start a conversation with yourself',
+      );
     }
 
-    // Check if a direct conversation already exists between these two users
+    // Check if a conversation already exists between these two users
     const existing = await this.findExistingDirectConversation(
       userId,
       dto.participantId,
-      dto.productId,
     );
     if (existing) {
-      return this.getConversationById(existing.id, userId);
+      const conversation = await this.getConversationById(existing.id, userId);
+      return {
+        conversation,
+        isExisting: true,
+        productId: dto.productId,
+      };
     }
 
+    // Create new conversation — productId is NOT stored on the conversation
     const conversation = this.conversationRepo.create({
-      type: dto.productId
-        ? ConversationType.PRODUCT_INQUIRY
-        : dto.type || ConversationType.DIRECT,
-      productId: dto.productId,
+      type: dto.type || ConversationType.DIRECT,
     });
     const saved = await this.conversationRepo.save(conversation);
 
@@ -75,9 +90,47 @@ export class ChatService {
     ];
     await this.participantRepo.save(participants);
 
-    return this.getConversationById(saved.id, userId);
+    const created = await this.getConversationById(saved.id, userId);
+
+    // Notify the other participant about the new conversation (fire-and-forget)
+    this.notifyNewConversationCreated(
+      userId,
+      dto.participantId,
+      saved.id,
+      created,
+    ).catch((err) =>
+      this.logger.error(
+        'Failed to send new conversation notification',
+        err.stack,
+      ),
+    );
+
+    return {
+      conversation: created,
+      isExisting: false,
+      productId: dto.productId,
+    };
   }
 
+  /**
+   * Find existing conversation between two users without creating one.
+   */
+  async findExistingConversation(
+    userId: string,
+    participantId: string,
+  ): Promise<Conversation | null> {
+    const existing = await this.findExistingDirectConversation(
+      userId,
+      participantId,
+    );
+    if (!existing) return null;
+    return this.getConversationById(existing.id, userId);
+  }
+
+  /**
+   * Get paginated conversations for a user, enriched with
+   * lastMessage, unreadCount, otherUser, and lastReferencedProduct.
+   */
   async getConversations(
     userId: string,
     filterDto: FilterConversationsDto,
@@ -98,7 +151,6 @@ export class ChatService {
       .leftJoinAndSelect('c.participants', 'p')
       .leftJoinAndSelect('p.user', 'u')
       .leftJoinAndSelect('u.profile', 'profile')
-      .leftJoinAndSelect('c.product', 'product')
       .orderBy('c.updatedAt', 'DESC');
 
     const [conversations, total] = await qb
@@ -106,7 +158,7 @@ export class ChatService {
       .take(limit)
       .getManyAndCount();
 
-    // Enrich with lastMessage and unreadCount
+    // Enrich with lastMessage, unreadCount, and lastReferencedProduct
     const data = await Promise.all(
       conversations.map(async (conv) => {
         const lastMessage = await this.messageRepo.findOne({
@@ -117,17 +169,30 @@ export class ChatService {
 
         const unreadCount = await this.getUnreadCount(conv.id, userId);
 
-        // Get the other participant for display purposes
+        // Get the other participant for display
         const otherParticipant = conv.participants.find(
           (p) => p.userId !== userId,
         );
 
+        // Get the most recently referenced product in this conversation
+        const lastProductMessage = await this.messageRepo.findOne({
+          where: { conversationId: conv.id },
+          order: { createdAt: 'DESC' },
+          relations: ['product', 'product.images'],
+        });
+        const lastReferencedProduct =
+          lastProductMessage?.product
+            ? {
+                id: lastProductMessage.product.id,
+                title: lastProductMessage.product.title,
+                price: lastProductMessage.product.price,
+                images: lastProductMessage.product.images,
+              }
+            : null;
+
         return {
           id: conv.id,
           type: conv.type,
-          product: conv.product
-            ? { id: conv.product.id, title: conv.product.title }
-            : null,
           otherUser: otherParticipant?.user
             ? {
                 id: otherParticipant.user.id,
@@ -152,6 +217,7 @@ export class ChatService {
                 createdAt: lastMessage.createdAt,
               }
             : null,
+          lastReferencedProduct,
           unreadCount,
           updatedAt: conv.updatedAt,
           createdAt: conv.createdAt,
@@ -178,7 +244,6 @@ export class ChatService {
         'participants',
         'participants.user',
         'participants.user.profile',
-        'product',
       ],
     });
 
@@ -203,7 +268,13 @@ export class ChatService {
 
     const [data, total] = await this.messageRepo.findAndCount({
       where: { conversationId },
-      relations: ['sender', 'sender.profile', 'replyTo'],
+      relations: [
+        'sender',
+        'sender.profile',
+        'replyTo',
+        'product',
+        'product.images',
+      ],
       order: { createdAt: 'DESC' },
       skip: (page - 1) * limit,
       take: limit,
@@ -228,6 +299,7 @@ export class ChatService {
       status: MessageStatus.SENT,
       attachmentUrl: dto.attachmentUrl,
       replyToId: dto.replyToId,
+      productId: dto.productId,
     });
 
     const saved = await this.messageRepo.save(message);
@@ -237,11 +309,56 @@ export class ChatService {
       updatedAt: new Date(),
     });
 
-    // Return with relations
-    return this.messageRepo.findOneOrFail({
+    // Return with all relations including product
+    const fullMessage = await this.messageRepo.findOneOrFail({
       where: { id: saved.id },
-      relations: ['sender', 'sender.profile', 'replyTo'],
+      relations: [
+        'sender',
+        'sender.profile',
+        'replyTo',
+        'product',
+        'product.images',
+      ],
     });
+
+    // Notify other participants (fire-and-forget)
+    this.notifyMessageParticipants(conversationId, senderId, fullMessage).catch(
+      (err) =>
+        this.logger.error('Failed to send message notifications', err.stack),
+    );
+
+    return fullMessage;
+  }
+
+  /**
+   * Send notification to all participants in a conversation except the sender.
+   */
+  private async notifyMessageParticipants(
+    conversationId: string,
+    senderId: string,
+    message: Message,
+  ): Promise<void> {
+    const participants = await this.participantRepo.find({
+      where: { conversationId },
+    });
+
+    const senderName =
+      message.sender?.profile?.firstName ||
+      message.sender?.username ||
+      'Someone';
+
+    const preview = message.content || '📎 Attachment';
+
+    for (const participant of participants) {
+      if (participant.userId !== senderId) {
+        await this.notificationsService.notifyNewMessage(
+          participant.userId,
+          senderName,
+          conversationId,
+          preview,
+        );
+      }
+    }
   }
 
   async markAsRead(conversationId: string, userId: string): Promise<void> {
@@ -290,7 +407,10 @@ export class ChatService {
     return this.messageRepo.save(message);
   }
 
-  async getUnreadCount(conversationId: string, userId: string): Promise<number> {
+  async getUnreadCount(
+    conversationId: string,
+    userId: string,
+  ): Promise<number> {
     const participant = await this.participantRepo.findOne({
       where: { conversationId, userId },
     });
@@ -332,27 +452,52 @@ export class ChatService {
     await this.conversationRepo.remove(conversation);
   }
 
+  async searchMessages(
+    conversationId: string,
+    userId: string,
+    searchTerm: string,
+    page: number = 1,
+    limit: number = 20,
+  ): Promise<{ data: Message[]; total: number; page: number; limit: number }> {
+    // Verify user is a participant
+    await this.getConversationById(conversationId, userId);
+
+    const [data, total] = await this.messageRepo
+      .createQueryBuilder('m')
+      .leftJoinAndSelect('m.sender', 'sender')
+      .leftJoinAndSelect('sender.profile', 'profile')
+      .leftJoinAndSelect('m.replyTo', 'replyTo')
+      .leftJoinAndSelect('m.product', 'product')
+      .leftJoinAndSelect('product.images', 'productImages')
+      .where('m.conversationId = :conversationId', { conversationId })
+      .andWhere('LOWER(m.content) LIKE LOWER(:searchTerm)', {
+        searchTerm: `%${searchTerm}%`,
+      })
+      .orderBy('m.createdAt', 'DESC')
+      .skip((page - 1) * limit)
+      .take(limit)
+      .getManyAndCount();
+
+    return { data: data.reverse(), total, page, limit };
+  }
+
   // ---- Private helpers ----
 
+  /**
+   * Find existing conversation between two users (order-independent).
+   * No longer considers productId — one conversation per user pair.
+   */
   private async findExistingDirectConversation(
     userId: string,
     otherUserId: string,
-    productId?: string,
   ): Promise<Conversation | null> {
-    const qb = this.conversationRepo
+    return this.conversationRepo
       .createQueryBuilder('c')
       .innerJoin('c.participants', 'p1', 'p1.userId = :userId', { userId })
       .innerJoin('c.participants', 'p2', 'p2.userId = :otherUserId', {
         otherUserId,
-      });
-
-    if (productId) {
-      qb.andWhere('c.productId = :productId', { productId });
-    } else {
-      qb.andWhere('c.productId IS NULL');
-    }
-
-    return qb.getOne();
+      })
+      .getOne();
   }
 
   private assertParticipant(conversation: Conversation, userId: string): void {
@@ -364,5 +509,30 @@ export class ChatService {
         'You are not a participant of this conversation',
       );
     }
+  }
+
+  /**
+   * Notify the other participant when a new conversation is created.
+   */
+  private async notifyNewConversationCreated(
+    initiatorId: string,
+    recipientId: string,
+    conversationId: string,
+    conversation: Conversation,
+  ): Promise<void> {
+    // Get initiator name from conversation participants
+    const initiator = conversation.participants.find(
+      (p) => p.userId === initiatorId,
+    );
+    const initiatorName =
+      initiator?.user?.profile?.firstName ||
+      initiator?.user?.username ||
+      'Someone';
+
+    await this.notificationsService.notifyNewConversation(
+      recipientId,
+      initiatorName,
+      conversationId,
+    );
   }
 }

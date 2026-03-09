@@ -7,12 +7,18 @@ export class CreateConversationDto {
   @IsUUID()
   participantId: string;
 
-  @ApiPropertyOptional({ description: 'Product ID if this is a product inquiry' })
+  @ApiPropertyOptional({
+    description:
+      'Product ID — only used to attach product context to the initial message. Does NOT create a separate conversation per product.',
+  })
   @IsOptional()
   @IsUUID()
   productId?: string;
 
-  @ApiPropertyOptional({ enum: ConversationType, default: ConversationType.DIRECT })
+  @ApiPropertyOptional({
+    enum: ConversationType,
+    default: ConversationType.DIRECT,
+  })
   @IsOptional()
   @IsEnum(ConversationType)
   type?: ConversationType;

@@ -3,20 +3,25 @@ import {
   NotFoundException,
   ConflictException,
   BadRequestException,
+  Logger,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Wishlist } from './entities/wishlist.entity';
 import { Product } from '../products/entities/product.entity';
 import { AddToWishlistDto } from './dto/add-to-wishlist.dto';
+import { NotificationsService } from '../notifications/notifications.service';
 
 @Injectable()
 export class WishlistService {
+  private readonly logger = new Logger(WishlistService.name);
+
   constructor(
     @InjectRepository(Wishlist)
     private wishlistRepository: Repository<Wishlist>,
     @InjectRepository(Product)
     private productRepository: Repository<Product>,
+    private readonly notificationsService: NotificationsService,
   ) {}
 
   /**
@@ -76,7 +81,21 @@ export class WishlistService {
         productId,
       });
 
-      return await this.wishlistRepository.save(wishlistItem);
+      const saved = await this.wishlistRepository.save(wishlistItem);
+
+      // Notify seller that someone wishlisted their product (fire-and-forget)
+      this.notificationsService
+        .notifyWishlistAdded(
+          product.sellerId,
+          'A buyer',
+          product.title,
+          productId,
+        )
+        .catch((err) =>
+          this.logger.error('Failed to send wishlist notification', err.stack),
+        );
+
+      return saved;
     } catch (error) {
       if (
         error instanceof BadRequestException ||
@@ -180,7 +199,7 @@ export class WishlistService {
   async toggleWishlist(
     userId: string,
     productId: string,
-  ): Promise<{ added: boolean; message: string }> {
+  ): Promise<{ isInWishlist: boolean; added: boolean; message: string }> {
     const existingItem = await this.wishlistRepository.findOne({
       where: { userId, productId },
     });
@@ -188,6 +207,7 @@ export class WishlistService {
     if (existingItem) {
       await this.wishlistRepository.remove(existingItem);
       return {
+        isInWishlist: false,
         added: false,
         message: 'Product removed from wishlist',
       };
@@ -215,7 +235,25 @@ export class WishlistService {
 
       await this.wishlistRepository.save(wishlistItem);
 
+      // Notify seller that someone wishlisted their product (fire-and-forget)
+      if (product.sellerId !== userId) {
+        this.notificationsService
+          .notifyWishlistAdded(
+            product.sellerId,
+            'A buyer',
+            product.title,
+            productId,
+          )
+          .catch((err) =>
+            this.logger.error(
+              'Failed to send wishlist notification',
+              err.stack,
+            ),
+          );
+      }
+
       return {
+        isInWishlist: true,
         added: true,
         message: 'Product added to wishlist',
       };

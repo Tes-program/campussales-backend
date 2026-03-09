@@ -4,6 +4,7 @@ import {
   Injectable,
   NotFoundException,
   ForbiddenException,
+  Logger,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
@@ -16,9 +17,13 @@ import { ProductDraft } from './entities/product-draft.entity';
 import { CreateDraftDto } from './dto/create-draft.dto';
 import { UpdateDraftDto } from './dto/update-draft.dto';
 import { PublishDraftDto } from './dto/publish-draft.dto';
+import { Wishlist } from '../wishlist/entities/wishlist.entity';
+import { NotificationsService } from '../notifications/notifications.service';
 
 @Injectable()
 export class ProductsService {
+  private readonly logger = new Logger(ProductsService.name);
+
   constructor(
     @InjectRepository(Product)
     private productsRepository: Repository<Product>,
@@ -26,6 +31,9 @@ export class ProductsService {
     private productImagesRepository: Repository<ProductImage>,
     @InjectRepository(ProductDraft)
     private productDraftsRepository: Repository<ProductDraft>,
+    @InjectRepository(Wishlist)
+    private wishlistRepository: Repository<Wishlist>,
+    private readonly notificationsService: NotificationsService,
   ) {}
 
   async create(
@@ -320,6 +328,9 @@ export class ProductsService {
         );
       }
 
+      // Capture old price for price-drop notifications
+      const oldPrice = Number(product.price);
+
       // Update product fields
       Object.assign(product, updateProductDto);
 
@@ -342,6 +353,22 @@ export class ProductsService {
 
         await this.productImagesRepository.save(images);
         updatedProduct.images = images;
+      }
+
+      // Notify wishlisters if price dropped (fire-and-forget)
+      const newPrice = Number(updatedProduct.price);
+      if (updateProductDto.price !== undefined && newPrice < oldPrice) {
+        this.notifyWishlistersOfPriceDrop(
+          id,
+          product.title,
+          oldPrice,
+          newPrice,
+        ).catch((err) =>
+          this.logger.error(
+            'Failed to send price drop notifications',
+            err.stack,
+          ),
+        );
       }
 
       return updatedProduct;
@@ -430,9 +457,7 @@ export class ProductsService {
   /**
    * Get product stats for seller
    */
-  async getMyProductStats(
-    sellerId: string,
-  ): Promise<{
+  async getMyProductStats(sellerId: string): Promise<{
     total: number;
     active: number;
     inactive: number;
@@ -715,5 +740,39 @@ export class ProductsService {
       .orderBy('product.viewCount', 'DESC')
       .take(limit)
       .getMany();
+  }
+
+  // ─── PRIVATE HELPERS ─────────────────────────────────────────
+
+  /**
+   * Notify all users who wishlisted a product when its price drops.
+   */
+  private async notifyWishlistersOfPriceDrop(
+    productId: string,
+    productTitle: string,
+    oldPrice: number,
+    newPrice: number,
+  ): Promise<void> {
+    const wishlistEntries = await this.wishlistRepository.find({
+      where: { productId },
+      select: ['userId', 'product'],
+      relations: ['product'],
+    });
+
+    for (const entry of wishlistEntries) {
+      await this.notificationsService.notifyPriceDrop(
+        entry.userId,
+        entry.product.title,
+        oldPrice,
+        newPrice,
+        productId,
+      );
+    }
+
+    if (wishlistEntries.length > 0) {
+      this.logger.log(
+        `Sent price drop notifications to ${wishlistEntries.length} users for product ${productId}`,
+      );
+    }
   }
 }

@@ -32,4 +32,11 @@ export class SendMessageDto {
   @IsOptional()
   @IsUUID()
   replyToId?: string;
+
+  @ApiPropertyOptional({
+    description: 'Product ID to attach product context to this message',
+  })
+  @IsOptional()
+  @IsUUID()
+  productId?: string;
 }

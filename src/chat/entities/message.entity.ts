@@ -9,6 +9,7 @@ import {
 import { MessageType, MessageStatus } from '../enums/chat.enums';
 import { Conversation } from './conversation.entity';
 import { User } from '../../users/entities/user.entity';
+import { Product } from '../../products/entities/product.entity';
 
 @Entity('messages')
 export class Message {
@@ -44,6 +45,9 @@ export class Message {
   @Column({ nullable: true })
   replyToId?: string;
 
+  @Column({ nullable: true })
+  productId?: string;
+
   @CreateDateColumn()
   createdAt: Date;
 
@@ -59,4 +63,8 @@ export class Message {
   @ManyToOne(() => Message, { nullable: true, onDelete: 'SET NULL' })
   @JoinColumn({ name: 'replyToId' })
   replyTo?: Message;
+
+  @ManyToOne(() => Product, { nullable: true, onDelete: 'SET NULL' })
+  @JoinColumn({ name: 'productId' })
+  product?: Product;
 }

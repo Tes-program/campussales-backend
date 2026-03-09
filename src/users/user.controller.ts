@@ -71,6 +71,27 @@ export class UsersController {
     );
   }
 
+  @Get('me')
+  @ApiOperation({ summary: 'Get current user profile' })
+  @ApiResponse({ status: 200, description: 'Current user profile' })
+  async getProfile(@CurrentUser() user: User) {
+    return await this.usersService.findByIdOrFail(user.id);
+  }
+
+  @Get('me/profile')
+  @ApiOperation({ summary: 'Get current user profile with statistics' })
+  @ApiResponse({ status: 200, description: 'Profile with stats retrieved' })
+  async getProfileWithStats(@CurrentUser() user: User) {
+    return await this.usersService.getUserProfile(user.id);
+  }
+
+  @Get('onboarding/status')
+  @ApiOperation({ summary: 'Check onboarding status' })
+  @ApiResponse({ status: 200, description: 'Onboarding status retrieved' })
+  async getOnboardingStatus(@CurrentUser() user: User) {
+    return await this.usersService.getOnboardingStatus(user.id);
+  }
+
   @Get(':id')
   @ApiOperation({ summary: 'Get user by ID' })
   @ApiResponse({ status: 200, description: 'User found' })
@@ -171,26 +192,5 @@ export class UsersController {
     @Body() onboardingDto: CompleteOnboardingDto,
   ) {
     return await this.usersService.completeOnboarding(user.id, onboardingDto);
-  }
-
-  @Get('onboarding/status')
-  @ApiOperation({ summary: 'Check onboarding status' })
-  @ApiResponse({ status: 200, description: 'Onboarding status retrieved' })
-  async getOnboardingStatus(@CurrentUser() user: User) {
-    return await this.usersService.getOnboardingStatus(user.id);
-  }
-
-  @Get('me')
-  @ApiOperation({ summary: 'Get current user profile' })
-  @ApiResponse({ status: 200, description: 'Current user profile' })
-  getProfile(@CurrentUser() user: User) {
-    return user;
-  }
-
-  @Get('me/profile')
-  @ApiOperation({ summary: 'Get current user profile with statistics' })
-  @ApiResponse({ status: 200, description: 'Profile with stats retrieved' })
-  async getProfileWithStats(@CurrentUser() user: User) {
-    return await this.usersService.getUserProfile(user.id);
   }
 }

@@ -2,6 +2,7 @@ import {
   Controller,
   Get,
   Patch,
+  Delete,
   Param,
   Query,
   UseGuards,
@@ -79,5 +80,18 @@ export class NotificationsController {
   ) {
     this.logger.log(`User ${user.id} marking notification ${id} as read`);
     return await this.notificationsService.markAsRead(id, user.id);
+  }
+
+  @Delete(':id')
+  @ApiOperation({ summary: 'Delete a notification' })
+  @ApiResponse({ status: 200, description: 'Notification deleted' })
+  @ApiResponse({ status: 404, description: 'Notification not found' })
+  @ApiResponse({ status: 401, description: 'Unauthorized' })
+  async deleteNotification(
+    @CurrentUser() user: User,
+    @Param('id', ParseUUIDPipe) id: string,
+  ) {
+    this.logger.log(`User ${user.id} deleting notification ${id}`);
+    return await this.notificationsService.deleteNotification(id, user.id);
   }
 }

@@ -182,7 +182,8 @@ export class UsersService {
         updatedUser.profile = profile;
       }
 
-      return updatedUser;
+      // Reload with full relations (including university)
+      return await this.findByIdOrFail(updatedUser.id);
     } catch (error) {
       if (
         error instanceof NotFoundException ||

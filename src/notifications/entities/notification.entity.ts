@@ -12,10 +12,18 @@ import { User } from '../../users/entities/user.entity';
 
 export enum NotificationType {
   MESSAGE = 'message',
+  NEW_CONVERSATION = 'new_conversation',
   ORDER = 'order',
   LISTING = 'listing',
+  WISHLIST = 'wishlist',
+  PRICE_DROP = 'price_drop',
+  OFFER_RECEIVED = 'offer_received',
+  OFFER_ACCEPTED = 'offer_accepted',
+  OFFER_REJECTED = 'offer_rejected',
+  PRODUCT_SOLD = 'product_sold',
   SYSTEM = 'system',
   PROMO = 'promo',
+  ACCOUNT = 'account',
 }
 
 @Entity('notifications')
