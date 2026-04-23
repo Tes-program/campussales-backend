@@ -40,9 +40,6 @@ export class UserProfile {
   @Column({ nullable: true })
   universityName?: string;
 
-  @Column({ nullable: true })
-  studentLevel?: string;
-
   @Column({ type: 'text', nullable: true })
   bio?: string;
 

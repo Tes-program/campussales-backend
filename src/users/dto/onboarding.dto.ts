@@ -90,16 +90,6 @@ export class CompleteOnboardingDto {
   @MaxLength(15)
   phoneNumber?: string;
 
-  @ApiProperty({
-    example: '400',
-    description: '100, 200, 300, 400, etc.',
-    required: false,
-  })
-  @IsOptional()
-  @IsString()
-  @MaxLength(50)
-  level?: string;
-
   @ApiProperty({ example: '2000-01-01', required: false })
   @IsOptional()
   @IsDateString()

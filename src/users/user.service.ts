@@ -269,7 +269,6 @@ export class UsersService {
         lastName: onboardingDto.lastName,
         universityId: onboardingDto.universityId,
         universityName: onboardingDto.universityName,
-        studentLevel: onboardingDto.level,
         dateOfBirth: onboardingDto.dateOfBirth,
         bio: onboardingDto.bio,
         profilePictureUrl: onboardingDto.profilePictureUrl,
@@ -321,7 +320,6 @@ export class UsersService {
     const hasProfile = !!user.profile;
     const hasUniversity = !!user.profile?.universityId;
     const hasUniversityName = !!user.profile?.universityName;
-    const hasLevel = !!user.profile?.studentLevel;
     const hasBio = !!user.profile?.bio;
     const hasProfilePicture = !!user.profile?.profilePictureUrl;
 
@@ -329,7 +327,6 @@ export class UsersService {
       hasProfile,
       hasUniversity,
       hasUniversityName,
-      hasLevel,
       hasBio,
       hasProfilePicture,
     };
@@ -338,7 +335,6 @@ export class UsersService {
     if (!hasProfile) missingFields.push('profile');
     if (!hasUniversity) missingFields.push('university');
     if (!hasUniversityName) missingFields.push('universityName');
-    if (!hasLevel) missingFields.push('studentLevel');
     if (!hasBio) missingFields.push('bio');
     if (!hasProfilePicture) missingFields.push('profilePicture');
 

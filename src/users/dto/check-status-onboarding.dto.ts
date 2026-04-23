@@ -5,7 +5,6 @@ export class OnboardingStatusDto {
     hasProfile: boolean;
     hasUniversity: boolean;
     hasUniversityName: boolean;
-    hasLevel: boolean;
     hasBio: boolean;
     hasProfilePicture: boolean;
   };
