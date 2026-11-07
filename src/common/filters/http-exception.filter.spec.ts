@@ -77,7 +77,7 @@ describe('HttpExceptionFilter', () => {
       new ForbiddenException(),
       403,
       'FORBIDDEN',
-      "You don't have permission to do that.",
+      'You do not have permission to perform this action.',
     ],
     [
       new NotFoundException('Cannot GET /api/nope'),

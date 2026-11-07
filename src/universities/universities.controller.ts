@@ -13,6 +13,7 @@ import {
   HttpCode,
   HttpStatus,
 } from '@nestjs/common';
+import { createArrayPipe } from '../common/validation/validation-errors';
 import {
   ApiTags,
   ApiOperation,
@@ -53,7 +54,10 @@ export class UniversitiesController {
     status: 201,
     description: 'Universities created successfully',
   })
-  async bulkCreate(@Body() universities: CreateUniversityDto[]) {
+  async bulkCreate(
+    @Body(createArrayPipe(CreateUniversityDto))
+    universities: CreateUniversityDto[],
+  ) {
     return await this.universitiesService.bulkCreate(universities);
   }
 

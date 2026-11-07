@@ -79,14 +79,14 @@ and draft publishing. All rules come from
 
 | Field | Type | Rule | Messages (`fields.<name>`) |
 | --- | --- | --- | --- |
-| `title` | string | Required on create. Trimmed. 3–80 characters (emoji/accents count as one). No control or invisible formatting characters (tabs, newlines, zero-width space, RTL override…). | "Enter a title for your item." · "Title must be at least 3 characters." · "Title must be 80 characters or fewer." · "Title contains characters we can’t display. Please retype it." |
+| `title` | string | Required on create. Trimmed. 3–80 characters (emoji/accents count as one). No control or invisible formatting characters (tabs, newlines, zero-width space, RTL override…). | "Please enter a product title." · "Title must be at least 3 characters." · "Title must be 80 characters or fewer." · "Title contains characters we can’t display. Please retype it." |
 | `description` | string | Optional. Trimmed. ≤ 600 characters. Newlines and tabs allowed. `null` on PATCH clears it. | "Description must be 600 characters or fewer." |
 | `price` | integer | Required on create. **Whole naira**, 50–100,000,000. Numeric strings like `"2500"` are accepted; `0`, negatives, decimals, `"abc"`, booleans are rejected. | "Enter a price." · "Price must be a number, like 2500." · "Price must be a whole number of naira (no kobo)." · "Price must be at least ₦50." · "Price can’t be more than ₦100,000,000." |
 | `quantity` | integer | Optional, default 1. 1–999. | "Quantity must be at least 1." · "Quantity can’t be more than 999." · "Quantity must be a whole number." |
-| `category` | string | Slug from the shared list (below). Names and old slugs are accepted and normalised. Send this **or** `categoryId`; one is required on create. | "Choose a category." · "Choose a category from the list." |
+| `category` | string | Slug from the shared list (below). Names and old slugs are accepted and normalised. Send this **or** `categoryId`; one is required on create. | "Please select a category." · "Choose a category from the list." |
 | `categoryId` | uuid | Legacy alternative to `category`. Must be an active category in the shared list. | "Choose a category from the list." |
 | `condition` | string | `new`, `like_new`, `used`, `fair`. UI labels `New`, `Like New`, `Used`, `Fair` are accepted (any case). Responses use the stored values. | "Choose the item’s condition." · "Condition must be New, Like New, Used or Fair." |
-| `images` | string[] | Required on create. 1–5 unique URLs of the form `https://res.cloudinary.com/<our cloud name>/…`. Other hosts are rejected. (Local development with `STORAGE_TYPE=local` also accepts `<BACKEND_URL>/uploads/…`.) First image is the cover. | "Add at least one photo." · "You can add up to 5 photos." · "Photos must be uploaded through CampusSales." · "Each photo can only be added once." |
+| `images` | string[] | Required on create. 1–5 unique URLs of the form `https://res.cloudinary.com/<our cloud name>/…`. Other hosts are rejected. (Local development with `STORAGE_TYPE=local` also accepts `<BACKEND_URL>/uploads/…`.) First image is the cover. | "Please add at least one image." · "Maximum 5 images allowed." · "Photos must be uploaded through CampusSales." · "Each photo can only be added once." |
 | `tags` | string[] | Optional. Lowercased, trimmed, spaces collapsed and de-duplicated by the server, then ≤ 10 tags of 2–24 characters (letters, numbers, spaces, hyphens; unicode letters fine). | "You can add up to 10 tags." · "Each tag must be 2 to 24 characters." · "Tags can only use letters, numbers, spaces and hyphens." |
 
 Unknown fields are rejected with "This field isn't accepted here."
@@ -188,6 +188,26 @@ already `active` is a pure bump: 429 `RATE_LIMITED` inside the 24 h window.
 featured, recommended, `my-products`, stats, and `GET /products/:id` (404).
 Chat headers stop showing them (`lastReferencedProduct` becomes `null`).
 Rows are kept for audit.
+
+### Drafts
+
+`POST /products/drafts`, `PATCH /products/drafts/:id` and
+`POST /products/drafts/auto-save` (`{ draftId?: uuid, data: {...draft fields} }`)
+accept the listing fields, all optional, so a half-finished draft saves fine.
+Any field that **is** sent must pass the listing rule, except that a draft may
+have a short title (any length up to 80) and zero photos. `category` (slug) is
+stored as `categoryId`. Errors for auto-save use `data.` prefixes
+(`fields["data.price"]`). Publishing runs the full create rules.
+
+### Other write endpoints validated in B1
+
+| Endpoint | Body |
+| --- | --- |
+| `POST /wishlist/check-multiple` | `{ productIds: uuid[] }` (≤ 100) |
+| `PATCH /users/:id/status` (admin) | `{ status: "active" \| "inactive" \| "suspended" }` |
+| `POST /categories/bulk`, `POST /universities/bulk` (admin) | JSON array; each item validated like the single-create body |
+
+Auth and chat bodies are covered in B2 and B4.
 
 ### Wishlist
 

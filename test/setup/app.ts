@@ -21,13 +21,14 @@ export async function createTestApp() {
   const ds = app.get(DataSource);
   const jwt = new JwtService({ secret: process.env.JWT_SECRET });
 
-  async function createUser(label = 'student') {
+  async function createUser(label = 'student', extra: Partial<User> = {}) {
     const suffix = randomUUID().slice(0, 8);
     const user = await ds.getRepository(User).save(
       ds.getRepository(User).create({
         email: `${label}-${suffix}@test.campussales.ng`,
         username: `${label}_${suffix}`,
         passwordHash: 'not-a-real-hash',
+        ...extra,
       }),
     );
     const token = jwt.sign({ sub: user.id, email: user.email });

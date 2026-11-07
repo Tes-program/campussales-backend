@@ -14,6 +14,7 @@ import {
   HttpStatus,
   Logger,
 } from '@nestjs/common';
+import { createArrayPipe } from '../common/validation/validation-errors';
 import {
   ApiTags,
   ApiOperation,
@@ -60,7 +61,9 @@ export class CategoriesController {
   @ApiResponse({ status: 201, description: 'Categories created successfully' })
   @ApiResponse({ status: 401, description: 'Unauthorized' })
   @ApiResponse({ status: 403, description: 'Forbidden - Admin only' })
-  async bulkCreate(@Body() categories: CreateCategoryDto[]) {
+  async bulkCreate(
+    @Body(createArrayPipe(CreateCategoryDto)) categories: CreateCategoryDto[],
+  ) {
     return await this.categoriesService.bulkCreate(categories);
   }
 

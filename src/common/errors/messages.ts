@@ -1,13 +1,14 @@
 import { ErrorCode } from './error-codes';
 
 /**
- * Student-facing copy. Keep in sync with the shared UI copy deck; the frontend
+ * Student-facing copy. Where the frontend already had a message for the same
+ * problem (Sell form toasts, api client) the same wording is used here. The frontend
  * should be able to show `error.message` and `error.fields[x]` verbatim.
  */
 export const DEFAULT_MESSAGES: Record<ErrorCode, string> = {
   [ErrorCode.VALIDATION_FAILED]: 'Please fix the highlighted fields.',
   [ErrorCode.UNAUTHENTICATED]: 'Please log in to continue.',
-  [ErrorCode.FORBIDDEN]: "You don't have permission to do that.",
+  [ErrorCode.FORBIDDEN]: 'You do not have permission to perform this action.',
   [ErrorCode.NOT_FOUND]: "We couldn't find what you're looking for.",
   [ErrorCode.CONFLICT]: 'That clashes with something that already exists.',
   [ErrorCode.RATE_LIMITED]:
@@ -26,7 +27,7 @@ export const MSG = {
   requestTimeout: 'This is taking longer than usual. Please try again.',
 
   // Listings
-  titleRequired: 'Enter a title for your item.',
+  titleRequired: 'Please enter a product title.',
   titleType: 'Title must be text.',
   titleShort: 'Title must be at least 3 characters.',
   titleLong: 'Title must be 80 characters or fewer.',
@@ -44,15 +45,15 @@ export const MSG = {
   quantityWhole: 'Quantity must be a whole number.',
   quantityMin: 'Quantity must be at least 1.',
   quantityMax: 'Quantity can’t be more than 999.',
-  categoryRequired: 'Choose a category.',
+  categoryRequired: 'Please select a category.',
   categoryInvalid: 'Choose a category from the list.',
   categoryUnavailable:
     'That category isn’t available right now. Choose another one.',
   conditionRequired: 'Choose the item’s condition.',
   conditionInvalid: 'Condition must be New, Like New, Used or Fair.',
-  imagesRequired: 'Add at least one photo.',
+  imagesRequired: 'Please add at least one image.',
   imagesType: 'Photos must be a list of uploaded images.',
-  imagesMax: 'You can add up to 5 photos.',
+  imagesMax: 'Maximum 5 images allowed.',
   imagesHost: 'Photos must be uploaded through CampusSales.',
   imagesDuplicate: 'Each photo can only be added once.',
   tagsType: 'Tags must be a list of words.',

@@ -84,8 +84,8 @@ describe('CreateProductDto', () => {
 
   describe('title', () => {
     it.each([
-      ['', 'Enter a title for your item.'],
-      ['   ', 'Enter a title for your item.'],
+      ['', 'Please enter a product title.'],
+      ['   ', 'Please enter a product title.'],
       ['ab', 'Title must be at least 3 characters.'],
       ['  ab  ', 'Title must be at least 3 characters.'],
       ['x'.repeat(81), 'Title must be 80 characters or fewer.'],
@@ -152,7 +152,7 @@ describe('CreateProductDto', () => {
   describe('category', () => {
     it('requires category or categoryId', async () => {
       expect((await create({ category: undefined })).fields.category).toBe(
-        'Choose a category.',
+        'Please select a category.',
       );
     });
     it('rejects a category outside the shared list', async () => {
@@ -161,9 +161,9 @@ describe('CreateProductDto', () => {
       );
     });
     it('normalises names and aliases to the slug', async () => {
-      expect((await create({ category: 'Books & Textbooks' })).value.category).toBe(
-        'books-textbooks',
-      );
+      expect(
+        (await create({ category: 'Books & Textbooks' })).value.category,
+      ).toBe('books-textbooks');
       expect((await create({ category: 'books-notes' })).value.category).toBe(
         'books-textbooks',
       );
@@ -205,9 +205,9 @@ describe('CreateProductDto', () => {
 
   describe('images', () => {
     it.each([
-      [[], 'Add at least one photo.'],
-      [undefined, 'Add at least one photo.'],
-      [[1, 2, 3, 4, 5, 6].map(img), 'You can add up to 5 photos.'],
+      [[], 'Please add at least one image.'],
+      [undefined, 'Please add at least one image.'],
+      [[1, 2, 3, 4, 5, 6].map(img), 'Maximum 5 images allowed.'],
       [
         ['https://evil.example.com/a.jpg'],
         'Photos must be uploaded through CampusSales.',
@@ -311,7 +311,7 @@ describe('UpdateProductDto', () => {
     expect(r.fields).toEqual({
       price: 'Price must be at least ₦50.',
       quantity: 'Quantity must be at least 1.',
-      images: 'Add at least one photo.',
+      images: 'Please add at least one image.',
     });
   });
 
@@ -321,7 +321,7 @@ describe('UpdateProductDto', () => {
       price: null,
       description: null,
     });
-    expect(r.fields.title).toBe('Enter a title for your item.');
+    expect(r.fields.title).toBe('Please enter a product title.');
     expect(r.fields.price).toBe('Enter a price.');
     expect(r.fields.description).toBeUndefined();
   });

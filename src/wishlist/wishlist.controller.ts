@@ -22,6 +22,7 @@ import {
 } from '@nestjs/swagger';
 import { WishlistService } from './wishlist.service';
 import { AddToWishlistDto } from './dto/add-to-wishlist.dto';
+import { CheckWishlistDto } from './dto/check-wishlist.dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { User } from '../users/entities/user.entity';
@@ -51,7 +52,9 @@ export class WishlistController {
     @CurrentUser() user: User,
     @Body() addToWishlistDto: AddToWishlistDto,
   ) {
-    this.logger.log(`User ${user.id} adding product ${addToWishlistDto.productId} to wishlist`);
+    this.logger.log(
+      `User ${user.id} adding product ${addToWishlistDto.productId} to wishlist`,
+    );
     return await this.wishlistService.addToWishlist(user.id, addToWishlistDto);
   }
 
@@ -102,7 +105,7 @@ export class WishlistController {
   @ApiResponse({ status: 200, description: 'Bulk check completed' })
   async checkMultipleProducts(
     @CurrentUser() user: User,
-    @Body() body: { productIds: string[] },
+    @Body() body: CheckWishlistDto,
   ) {
     return await this.wishlistService.checkMultipleProducts(
       user.id,
@@ -138,7 +141,9 @@ export class WishlistController {
     @CurrentUser() user: User,
     @Param('productId', ParseUUIDPipe) productId: string,
   ) {
-    this.logger.log(`User ${user.id} removing product ${productId} from wishlist`);
+    this.logger.log(
+      `User ${user.id} removing product ${productId} from wishlist`,
+    );
     await this.wishlistService.removeFromWishlist(user.id, productId);
   }
 }

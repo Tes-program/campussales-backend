@@ -9,6 +9,7 @@ import { Message } from '../src/chat/entities/message.entity';
 import { Conversation } from '../src/chat/entities/conversation.entity';
 import { University } from '../src/users/entities/university.entity';
 import { User } from '../src/users/entities/user.entity';
+import { UserType } from '../src/common/enum/user.enums';
 
 const img = (n: number) =>
   `https://res.cloudinary.com/campussales-test/image/upload/v1/campussales/${n}.jpg`;
@@ -573,7 +574,7 @@ describe('B1 validation and data integrity (e2e)', () => {
       .set(seller.auth)
       .send({
         title: 'Draft chair',
-        price: 0,
+
         condition: 'used',
         images: [img(5)],
       });
@@ -587,8 +588,8 @@ describe('B1 validation and data integrity (e2e)', () => {
       'Finish the highlighted fields before publishing.',
     );
     expect(res.body.error.fields).toMatchObject({
-      price: 'Price must be at least ₦50.',
-      category: 'Choose a category.',
+      price: 'Enter a price.',
+      category: 'Please select a category.',
     });
 
     const ok = await http()
@@ -604,6 +605,97 @@ describe('B1 validation and data integrity (e2e)', () => {
       });
     expect(ok.status).toBe(201);
     expect(ok.body.status).toBe('active');
+  });
+
+  describe('remaining write endpoints validate input', () => {
+    it('draft fields follow the listing rules but may be incomplete', async () => {
+      const ok = await http()
+        .post('/api/products/drafts')
+        .set(seller.auth)
+        .send({ title: 'Ch', images: [] });
+      expect(ok.status).toBe(201);
+      const bad = await http()
+        .post('/api/products/drafts')
+        .set(seller.auth)
+        .send({
+          price: 10.5,
+          quantity: -3,
+          images: ['https://evil.example/x.jpg'],
+        });
+      expect(bad.status).toBe(400);
+      expect(bad.body.error.fields).toEqual({
+        price: 'Price must be a whole number of naira (no kobo).',
+        quantity: 'Quantity must be at least 1.',
+        images: 'Photos must be uploaded through CampusSales.',
+      });
+    });
+
+    it('a draft can store a category slug', async () => {
+      const res = await http()
+        .post('/api/products/drafts')
+        .set(seller.auth)
+        .send({ category: 'Books & Textbooks' });
+      const cat = await ds
+        .getRepository(Category)
+        .findOneByOrFail({ slug: 'books-textbooks' });
+      expect(res.body.categoryId).toBe(cat.id);
+    });
+
+    it('auto-save validates its body', async () => {
+      const missing = await http()
+        .post('/api/products/drafts/auto-save')
+        .set(seller.auth)
+        .send({});
+      expect(missing.status).toBe(400);
+      expect(missing.body.error.fields.data).toBe('This field is required.');
+      const nested = await http()
+        .post('/api/products/drafts/auto-save')
+        .set(seller.auth)
+        .send({ draftId: 'nope', data: { price: 0 } });
+      expect(nested.body.error.fields).toEqual({
+        draftId: "This value isn't valid.",
+        'data.price': 'Price must be at least ₦50.',
+      });
+      const ok = await http()
+        .post('/api/products/drafts/auto-save')
+        .set(seller.auth)
+        .send({ data: { title: 'Desk lamp' } });
+      expect(ok.status).toBe(201);
+    });
+
+    it('wishlist check-multiple validates ids', async () => {
+      const bad = await http()
+        .post('/api/wishlist/check-multiple')
+        .set(other.auth)
+        .send({ productIds: ['x'] });
+      expect(bad.status).toBe(400);
+      expect(bad.body.error.fields.productIds).toBe(
+        'Each item id must be valid.',
+      );
+    });
+
+    it('admin status and bulk endpoints validate input', async () => {
+      const admin = await createUser('admin', { userType: UserType.ADMIN });
+      const status = await http()
+        .patch(`/api/users/${other.user.id}/status`)
+        .set(admin.auth)
+        .send({ status: 'banana' });
+      expect(status.status).toBe(400);
+      expect(status.body.error.fields.status).toBe(
+        'Status must be active, inactive or suspended.',
+      );
+      const bulk = await http()
+        .post('/api/categories/bulk')
+        .set(admin.auth)
+        .send([{ name: 'X' }]);
+      expect(bulk.status).toBe(400);
+      expect(bulk.body.error.code).toBe('VALIDATION_FAILED');
+      const notArray = await http()
+        .post('/api/universities/bulk')
+        .set(admin.auth)
+        .send({ name: 'X' });
+      expect(notArray.status).toBe(400);
+    });
   });
 
   // ─────────────────────────────── onboarding ─────────────────────────────

@@ -1,4 +1,6 @@
 import {
+  ParseArrayPipe,
+  Type,
   ValidationError,
   ValidationPipe,
   ValidationPipeOptions,
@@ -102,4 +104,24 @@ export function createValidationPipe(
   overrides: Partial<ValidationPipeOptions> = {},
 ): ValidationPipe {
   return new ValidationPipe({ ...VALIDATION_PIPE_OPTIONS, ...overrides });
+}
+
+/**
+ * Validates a JSON array body item by item (a plain `Dto[]` parameter type is
+ * NOT validated by ValidationPipe). The first invalid item's field errors are
+ * returned; a non-array body is a VALIDATION_FAILED on `body`.
+ */
+export function createArrayPipe(items: Type<unknown>): ParseArrayPipe {
+  return new ParseArrayPipe({
+    items,
+    whitelist: true,
+    forbidNonWhitelisted: true,
+    exceptionFactory: (errors: unknown) =>
+      Array.isArray(errors) &&
+      typeof errors[0] === 'object' &&
+      errors[0] !== null &&
+      'property' in errors[0]
+        ? validationExceptionFactory(errors as ValidationError[])
+        : new ValidationFailed({ body: 'Send a list of items.' }),
+  });
 }

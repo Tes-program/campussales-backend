@@ -14,7 +14,6 @@ import {
   HttpCode,
   HttpStatus,
 } from '@nestjs/common';
-import { createValidationPipe } from '../common/validation/validation-errors';
 import {
   ApiTags,
   ApiOperation,
@@ -30,6 +29,7 @@ import { ProductDraft } from './entities/product-draft.entity';
 import { CreateDraftDto } from './dto/create-draft.dto';
 import { UpdateDraftDto } from './dto/update-draft.dto';
 import { PublishDraftDto } from './dto/publish-draft.dto';
+import { AutoSaveDraftDto } from './dto/auto-save-draft.dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { User } from '../users/entities/user.entity';
@@ -157,7 +157,7 @@ export class ProductsController {
   @ApiResponse({ status: 401, description: 'Unauthorized' })
   async autoSaveDraft(
     @CurrentUser() user: User,
-    @Body() body: { draftId?: string; data: CreateDraftDto | UpdateDraftDto },
+    @Body() body: AutoSaveDraftDto,
   ): Promise<ProductDraft> {
     this.logger.log(`User ${user.id} auto-saving draft`);
     return await this.productsService.autoSaveDraft(
@@ -253,7 +253,7 @@ export class ProductsController {
   async publishDraft(
     @CurrentUser() user: User,
     @Param('id', ParseUUIDPipe) id: string,
-    @Body(createValidationPipe({ forbidNonWhitelisted: false }))
+    @Body()
     publishDraftDto?: PublishDraftDto,
   ): Promise<Product> {
     this.logger.log(`User ${user.id} publishing draft ${id}`);

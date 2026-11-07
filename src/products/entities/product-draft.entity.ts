@@ -25,8 +25,9 @@ export class ProductDraft {
   @Column({ type: 'text', nullable: true })
   description?: string;
 
-  @Column({ type: 'decimal', precision: 10, scale: 2, nullable: true })
-  price?: number;
+  /** Whole naira, like products.price. */
+  @Column({ type: 'integer', nullable: true })
+  price?: number | null;
 
   @Column({
     type: 'enum',

@@ -28,9 +28,10 @@ import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles } from '../auth/decorators/role.decorator';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { User } from './entities/user.entity';
-import { UserType, UserStatus } from '../common/enum/user.enums';
+import { UserType } from '../common/enum/user.enums';
 import { PaginationDto } from '../common/dto/pagination.dto';
 import { CompleteOnboardingDto } from './dto/onboarding.dto';
+import { UpdateUserStatusDto } from './dto/update-user-status.dto';
 
 @ApiTags('Users')
 @Controller('users')
@@ -140,7 +141,7 @@ export class UsersController {
   @ApiResponse({ status: 403, description: 'Forbidden - Admin only' })
   async updateStatus(
     @Param('id', ParseUUIDPipe) id: string,
-    @Body() body: { status: UserStatus },
+    @Body() body: UpdateUserStatusDto,
   ) {
     this.logger.log(`Admin updating user ${id} status to: ${body.status}`);
     return await this.usersService.updateStatus(id, body.status);

@@ -382,7 +382,7 @@ export class ProductsService {
   ): Promise<ProductDraft> {
     const draft = this.productDraftsRepository.create({
       sellerId,
-      ...createDraftDto,
+      ...(await this.draftColumns(createDraftDto)),
     });
     return this.productDraftsRepository.save(draft);
   }
@@ -422,7 +422,7 @@ export class ProductsService {
     updateDraftDto: UpdateDraftDto,
   ): Promise<ProductDraft> {
     const draft = await this.getDraftById(id, sellerId);
-    Object.assign(draft, updateDraftDto);
+    Object.assign(draft, await this.draftColumns(updateDraftDto));
     return this.productDraftsRepository.save(draft);
   }
 
@@ -452,7 +452,10 @@ export class ProductsService {
       price: publishData?.price ?? draftPrice,
       condition: publishData?.condition ?? draft.condition,
       quantity: publishData?.quantity ?? draft.quantity ?? 1,
-      categoryId: publishData?.categoryId ?? draft.categoryId,
+      category: publishData?.category,
+      categoryId: publishData?.category
+        ? undefined
+        : (publishData?.categoryId ?? draft.categoryId),
       images: publishData?.images ?? draft.images ?? [],
       tags: publishData?.tags ?? draft.tags ?? [],
     };
@@ -503,6 +506,21 @@ export class ProductsService {
   }
 
   // ─── HELPERS ─────────────────────────────────────────────────
+
+  /** Maps a validated draft DTO onto draft columns (category slug -> id). */
+  private async draftColumns(
+    dto: CreateDraftDto | UpdateDraftDto,
+  ): Promise<Partial<ProductDraft>> {
+    const { category, ...rest } = dto;
+    const columns: Partial<ProductDraft> = { ...rest };
+    if (category) {
+      columns.categoryId = await this.resolveCategoryId(
+        { category },
+        this.dataSource.manager,
+      );
+    }
+    return columns;
+  }
 
   /** Loads a live (not deleted) product and checks ownership: 404, then 403. */
   private async findOwnedForWrite(
@@ -610,8 +628,7 @@ export class ProductsService {
       const rows = await repo.find({
         where: { slug: In(categorySlugVariants(dto.category)), isActive: true },
       });
-      const row =
-        rows.find((r) => r.slug === dto.category) ?? rows[0] ?? null;
+      const row = rows.find((r) => r.slug === dto.category) ?? rows[0] ?? null;
       if (!row) {
         this.logger.warn(
           `Category "${dto.category}" is in the shared list but not in the database. Run npm run seed:categories.`,

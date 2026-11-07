@@ -1,86 +1,96 @@
-// src/products/dto/create-draft.dto.ts
-import { ApiProperty } from '@nestjs/swagger';
+// Schema for POST /api/products/drafts. Drafts may be incomplete, so every
+// field is optional, but any field that is present must pass the same rule as
+// a listing (common/validation/rules.ts). Publishing re-checks the whole thing.
+import { ApiPropertyOptional } from '@nestjs/swagger';
+import { IsObject, IsOptional } from 'class-validator';
+import { CATEGORY_SLUGS } from '../../common/constants/categories';
 import {
-  IsString,
-  IsNumber,
-  IsEnum,
-  IsOptional,
-  IsArray,
-  IsUUID,
-  Min,
-  MaxLength,
-} from 'class-validator';
-import { ProductCondition } from '../entities/product.entity';
+  LISTING_LIMITS as L,
+  ProductCondition,
+} from '../../common/constants/listing';
+import { MSG } from '../../common/errors/messages';
+import { Normalise, OptionalRule } from '../../common/validation/decorators';
+import {
+  Check,
+  coerceIntegerString,
+  normaliseCategory,
+  normaliseCondition,
+  normaliseImages,
+  normaliseTags,
+  normaliseText,
+  validateCategorySlug,
+  validateCondition,
+  validateDescription,
+  validatePrice,
+  validateQuantity,
+  validateTags,
+  validateTitle,
+  makeValidateImages,
+} from '../../common/validation/rules';
+import { categoryIdCheck } from './create-product.dto';
+
+/** Drafts may have zero photos; otherwise the listing image rule applies. */
+const validateDraftImages: Check = (v) =>
+  Array.isArray(v) && v.length === 0 ? null : makeValidateImages()(v);
+
+/** Drafts may hold a short work-in-progress title; only length/characters are checked. */
+const validateDraftTitle: Check = (v) => {
+  const m = validateTitle(v);
+  return m === MSG.titleShort || m === MSG.titleRequired ? null : m;
+};
+
+const nullable =
+  (check: Check): Check =>
+  (v, o) =>
+    v === null ? null : check(v, o);
 
 export class CreateDraftDto {
-  @ApiProperty({ example: 'iPhone 13 Pro Max', required: false })
-  @IsOptional()
-  @IsString()
-  @MaxLength(200)
+  @ApiPropertyOptional({ maxLength: L.titleMax })
+  @Normalise(normaliseText)
+  @OptionalRule(nullable(validateDraftTitle))
   title?: string;
 
-  @ApiProperty({
-    example: 'Excellent condition, barely used for 6 months',
-    required: false,
-  })
-  @IsOptional()
-  @IsString()
-  @MaxLength(2000)
+  @ApiPropertyOptional({ maxLength: L.descriptionMax })
+  @Normalise(normaliseText)
+  @OptionalRule(validateDescription)
   description?: string;
 
-  @ApiProperty({ example: 450000.0, required: false })
-  @IsOptional()
-  @IsNumber()
-  @Min(0)
+  @ApiPropertyOptional({ minimum: L.priceMin, maximum: L.priceMax })
+  @Normalise(coerceIntegerString)
+  @OptionalRule(nullable(validatePrice))
   price?: number;
 
-  @ApiProperty({
-    enum: ProductCondition,
-    example: ProductCondition.LIKE_NEW,
-    required: false,
-  })
-  @IsOptional()
-  @IsEnum(ProductCondition)
+  @ApiPropertyOptional({ enum: ProductCondition })
+  @Normalise(normaliseCondition)
+  @OptionalRule(nullable(validateCondition))
   condition?: ProductCondition;
 
-  @ApiProperty({ example: 1, required: false })
-  @IsOptional()
-  @IsNumber()
-  @Min(1)
+  @ApiPropertyOptional({ minimum: L.quantityMin, maximum: L.quantityMax })
+  @Normalise(coerceIntegerString)
+  @OptionalRule(nullable(validateQuantity))
   quantity?: number;
 
-  @ApiProperty({ required: false })
-  @IsOptional()
-  @IsUUID()
+  @ApiPropertyOptional({ enum: CATEGORY_SLUGS })
+  @Normalise(normaliseCategory)
+  @OptionalRule(nullable(validateCategorySlug))
+  category?: string;
+
+  @ApiPropertyOptional({ format: 'uuid' })
+  @OptionalRule(nullable(categoryIdCheck))
   categoryId?: string;
 
-  @ApiProperty({
-    type: [String],
-    example: [
-      'https://example.com/image1.jpg',
-      'https://example.com/image2.jpg',
-    ],
-    required: false,
-  })
-  @IsOptional()
-  @IsArray()
-  @IsString({ each: true })
+  @ApiPropertyOptional({ type: [String], maxItems: L.imagesMax })
+  @Normalise(normaliseImages)
+  @OptionalRule(nullable(validateDraftImages))
   images?: string[];
 
-  @ApiProperty({
-    type: [String],
-    example: ['electronics', 'phone', 'apple'],
-    required: false,
-  })
-  @IsOptional()
-  @IsArray()
-  @IsString({ each: true })
+  @ApiPropertyOptional({ type: [String], maxItems: L.tagsMax })
+  @Normalise(normaliseTags)
+  @OptionalRule(validateTags)
   tags?: string[];
 
-  @ApiProperty({
-    example: { step: 'details', progress: 50 },
-    required: false,
-  })
+  @ApiPropertyOptional({ example: { step: 'details', progress: 50 } })
   @IsOptional()
-  metadata?: Record<string, any>;
+  @IsObject({ message: MSG.invalidValue })
+  metadata?: Record<string, unknown>;
 }
