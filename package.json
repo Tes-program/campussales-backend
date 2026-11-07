@@ -22,7 +22,11 @@
     "typeorm": "typeorm-ts-node-commonjs",
     "migration:generate": "npm run typeorm -- migration:generate -d src/database/data-source.ts",
     "migration:run": "npm run typeorm -- migration:run -d src/database/data-source.ts",
-    "migration:revert": "npm run typeorm -- migration:revert -d src/database/data-source.ts"
+    "migration:revert": "npm run typeorm -- migration:revert -d src/database/data-source.ts",
+    "seed:categories": "ts-node -r tsconfig-paths/register src/database/seeds/seed-categories.ts",
+    "seed:schools": "ts-node -r tsconfig-paths/register src/database/seeds/seed-schools.ts",
+    "audit:data": "node scripts/audit-data.js",
+    "fix:data": "node scripts/fix-data.js"
   },
   "dependencies": {
     "@nestjs/bullmq": "^11.0.4",

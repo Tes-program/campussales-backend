@@ -4,6 +4,8 @@ import {
   Column,
   CreateDateColumn,
   UpdateDateColumn,
+  DeleteDateColumn,
+  Index,
   ManyToOne,
   OneToMany,
   JoinColumn,
@@ -11,17 +13,21 @@ import {
 import { User } from '../../users/entities/user.entity';
 import { Category } from './category.entity';
 import { ProductImage } from './product-image.entity';
-// import { ProductTag } from './product-tag.entity';
-// import { Wishlist } from './wishlist.entity';
+import {
+  ProductCondition,
+  ProductStatus,
+} from '../../common/constants/listing';
 
-export enum ProductCondition {
-  NEW = 'new',
-  LIKE_NEW = 'like_new',
-  USED = 'used',
-  FAIR = 'fair',
+export { ProductCondition, ProductStatus };
+
+export interface PriceChange {
+  oldPrice: number;
+  newPrice: number;
+  changedAt: string;
 }
 
 @Entity('products')
+@Index('IDX_products_status_deleted', ['status', 'deletedAt'])
 export class Product {
   @PrimaryGeneratedColumn('uuid')
   id: string;
@@ -38,7 +44,8 @@ export class Product {
   @Column({ type: 'text' })
   description: string;
 
-  @Column({ type: 'decimal', precision: 10, scale: 2 })
+  /** Whole naira (integer). Kobo is not stored; see docs/api.md. */
+  @Column({ type: 'integer' })
   price: number;
 
   @Column({
@@ -60,6 +67,28 @@ export class Product {
   @Column({ default: false })
   isFeatured: boolean;
 
+  @Column({
+    type: 'varchar',
+    length: 20,
+    default: ProductStatus.ACTIVE,
+  })
+  status: ProductStatus;
+
+  @Column({ type: 'jsonb', default: () => "'[]'" })
+  tags: string[];
+
+  /** Newest last. Drives "Price drop" and "Was/Now" in the UI. */
+  @Column({ type: 'jsonb', default: () => "'[]'" })
+  priceHistory: PriceChange[];
+
+  /** Last time relist bumped createdAt (max once per 24h). */
+  @Column({ type: 'timestamp', nullable: true })
+  lastBumpedAt?: Date | null;
+
+  /** Soft delete. TypeORM excludes these rows from finds and joins. */
+  @DeleteDateColumn({ type: 'timestamp', nullable: true })
+  deletedAt?: Date | null;
+
   @Column({ default: 0 })
   viewCount: number;
 
@@ -80,10 +109,11 @@ export class Product {
 
   @OneToMany(() => ProductImage, (image) => image.product, { cascade: true })
   images: ProductImage[];
+}
 
-  //   @OneToMany(() => ProductTag, (tag) => tag.product, { cascade: true })
-  //   tags: ProductTag[];
-
-  //   @OneToMany(() => Wishlist, (wishlist) => wishlist.product)
-  //   wishlists: Wishlist[];
+/** Sets status and keeps the legacy isAvailable/isSold flags in sync. */
+export function applyStatus(product: Product, status: ProductStatus): void {
+  product.status = status;
+  product.isSold = status === ProductStatus.SOLD;
+  product.isAvailable = status === ProductStatus.ACTIVE;
 }

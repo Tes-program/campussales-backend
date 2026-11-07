@@ -20,9 +20,9 @@ import {
   ApiBearerAuth,
   ApiQuery,
 } from '@nestjs/swagger';
-import { UsersService } from './user.service';
+import { toPublicUser, UsersService } from './user.service';
 import { CreateUserDto } from './dto/create-user.dto';
-import { UpdateUserDto } from './dto/update-user.dto';
+import { UpdateMeDto, UpdateUserDto } from './dto/update-user.dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles } from '../auth/decorators/role.decorator';
@@ -105,14 +105,14 @@ export class UsersController {
   @Patch('me')
   @ApiOperation({ summary: 'Update current user profile' })
   @ApiResponse({ status: 200, description: 'Profile updated successfully' })
-  @ApiResponse({ status: 400, description: 'Invalid input data' })
-  @ApiResponse({ status: 409, description: 'Email already exists' })
-  async updateProfile(
-    @CurrentUser() user: User,
-    @Body() updateUserDto: UpdateUserDto,
-  ) {
+  @ApiResponse({ status: 400, description: 'VALIDATION_FAILED with fields' })
+  @ApiResponse({
+    status: 409,
+    description: 'CONFLICT - email or phone already used on another account',
+  })
+  async updateProfile(@CurrentUser() user: User, @Body() dto: UpdateMeDto) {
     this.logger.log(`User ${user.id} updating own profile`);
-    return await this.usersService.update(user.id, updateUserDto);
+    return toPublicUser(await this.usersService.update(user.id, dto));
   }
 
   @Patch(':id')
@@ -182,15 +182,20 @@ export class UsersController {
 
   @Post('onboarding/complete')
   @ApiOperation({ summary: 'Complete user onboarding' })
+  @HttpCode(HttpStatus.OK)
   @ApiResponse({
     status: 200,
-    description: 'Onboarding completed successfully',
+    description:
+      'User with profile and canonical school { id, name, shortName, city }',
   })
-  @ApiResponse({ status: 400, description: 'Invalid data' })
+  @ApiResponse({ status: 400, description: 'VALIDATION_FAILED with fields' })
+  @ApiResponse({ status: 409, description: 'CONFLICT - phone already used' })
   async completeOnboarding(
     @CurrentUser() user: User,
     @Body() onboardingDto: CompleteOnboardingDto,
   ) {
-    return await this.usersService.completeOnboarding(user.id, onboardingDto);
+    return toPublicUser(
+      await this.usersService.completeOnboarding(user.id, onboardingDto),
+    );
   }
 }

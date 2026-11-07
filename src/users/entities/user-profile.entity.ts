@@ -10,6 +10,7 @@ import {
 } from 'typeorm';
 import { User } from './user.entity';
 import { University } from './university.entity';
+import { Gender, GENDERS, Level } from '../../common/constants/profile';
 
 @Entity('user_profiles')
 export class UserProfile {
@@ -25,8 +26,12 @@ export class UserProfile {
   @Column()
   lastName: string;
 
-  @Column({ type: 'enum', enum: ['Male', 'Female'], nullable: true })
-  gender?: 'Male' | 'Female';
+  @Column({ type: 'enum', enum: GENDERS, nullable: true })
+  gender?: Gender | null;
+
+  /** 100-600, Postgraduate or Alumnus (see common/constants/profile.ts). */
+  @Column({ type: 'varchar', length: 20, nullable: true })
+  level?: Level | null;
 
   @Column({ type: 'date', nullable: true })
   dateOfBirth?: Date;

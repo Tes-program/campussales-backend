@@ -6,9 +6,13 @@ import { User } from './entities/user.entity';
 import { UserProfile } from './entities/user-profile.entity';
 import { University } from './entities/university.entity';
 import { Logger } from '@nestjs/common';
+import { UniversitiesModule } from '../universities/universities.module';
 
 @Module({
-  imports: [TypeOrmModule.forFeature([User, UserProfile, University])],
+  imports: [
+    TypeOrmModule.forFeature([User, UserProfile, University]),
+    UniversitiesModule,
+  ],
   controllers: [UsersController],
   providers: [UsersService, Logger],
   exports: [UsersService],

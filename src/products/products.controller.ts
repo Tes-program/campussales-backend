@@ -13,8 +13,8 @@ import {
   Logger,
   HttpCode,
   HttpStatus,
-  ValidationPipe,
 } from '@nestjs/common';
+import { createValidationPipe } from '../common/validation/validation-errors';
 import {
   ApiTags,
   ApiOperation,
@@ -253,7 +253,7 @@ export class ProductsController {
   async publishDraft(
     @CurrentUser() user: User,
     @Param('id', ParseUUIDPipe) id: string,
-    @Body(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: false }))
+    @Body(createValidationPipe({ forbidNonWhitelisted: false }))
     publishDraftDto?: PublishDraftDto,
   ): Promise<Product> {
     this.logger.log(`User ${user.id} publishing draft ${id}`);
@@ -279,76 +279,133 @@ export class ProductsController {
   @Patch(':id')
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
-  @ApiOperation({ summary: 'Update product' })
-  @ApiResponse({ status: 200, description: 'Product updated successfully' })
-  @ApiResponse({
-    status: 403,
-    description: 'Forbidden - Not the product owner',
+  @ApiOperation({
+    summary:
+      'Edit a listing (any subset of fields). Records priceHistory on price change.',
   })
-  @ApiResponse({ status: 404, description: 'Product not found' })
-  @ApiResponse({ status: 401, description: 'Unauthorized' })
+  @ApiResponse({ status: 200, description: 'Updated product' })
+  @ApiResponse({ status: 400, description: 'VALIDATION_FAILED' })
+  @ApiResponse({ status: 403, description: 'FORBIDDEN - not the owner' })
+  @ApiResponse({ status: 404, description: 'NOT_FOUND - missing or deleted' })
+  @ApiResponse({
+    status: 409,
+    description: 'CONFLICT - item is sold; relist instead',
+  })
   async update(
     @Param('id', ParseUUIDPipe) id: string,
     @CurrentUser() user: User,
     @Body() updateProductDto: UpdateProductDto,
   ) {
     this.logger.log(`User ${user.id} updating product: ${id}`);
-    return await this.productsService.update(id, user.id, updateProductDto);
+    return this.productsService.update(id, user.id, updateProductDto);
   }
 
+  @Post(':id/relist')
+  @HttpCode(HttpStatus.OK)
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary:
+      'Make a sold/inactive item active again (optional edits in body). Bumps createdAt at most once per 24h.',
+  })
+  @ApiResponse({ status: 200, description: 'Updated product' })
+  @ApiResponse({
+    status: 429,
+    description: 'RATE_LIMITED - already bumped in last 24h',
+  })
+  async relist(
+    @Param('id', ParseUUIDPipe) id: string,
+    @CurrentUser() user: User,
+    @Body() body: UpdateProductDto,
+  ) {
+    return this.productsService.relist(id, user.id, body);
+  }
+
+  @Post(':id/sold')
+  @HttpCode(HttpStatus.OK)
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Mark as sold (idempotent)' })
+  @ApiResponse({ status: 200, description: 'Updated product' })
+  async markSold(
+    @Param('id', ParseUUIDPipe) id: string,
+    @CurrentUser() user: User,
+  ) {
+    return this.productsService.markAsSold(id, user.id);
+  }
+
+  @Post(':id/deactivate')
+  @HttpCode(HttpStatus.OK)
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Hide an active listing (idempotent)' })
+  @ApiResponse({ status: 200, description: 'Updated product' })
+  async deactivate(
+    @Param('id', ParseUUIDPipe) id: string,
+    @CurrentUser() user: User,
+  ) {
+    return this.productsService.deactivate(id, user.id);
+  }
+
+  @Post(':id/activate')
+  @HttpCode(HttpStatus.OK)
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary:
+      'Show an inactive listing again (idempotent). Sold items need relist.',
+  })
+  @ApiResponse({ status: 200, description: 'Updated product' })
+  @ApiResponse({ status: 409, description: 'CONFLICT - item is sold' })
+  async activate(
+    @Param('id', ParseUUIDPipe) id: string,
+    @CurrentUser() user: User,
+  ) {
+    return this.productsService.activate(id, user.id);
+  }
+
+  /** @deprecated use POST /:id/deactivate or /:id/activate */
   @Patch(':id/unavailable')
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
-  @ApiOperation({ summary: 'Mark product as unavailable' })
-  @ApiResponse({ status: 200, description: 'Product marked as unavailable' })
-  @ApiResponse({
-    status: 403,
-    description: 'Forbidden - Not the product owner',
+  @ApiOperation({
+    summary: 'Deprecated: toggle active/inactive',
+    deprecated: true,
   })
-  @ApiResponse({ status: 404, description: 'Product not found' })
   async markAsUnavailable(
     @Param('id', ParseUUIDPipe) id: string,
     @CurrentUser() user: User,
   ) {
-    this.logger.log(`User ${user.id} marking product ${id} as unavailable`);
-    return await this.productsService.markAsUnavailable(id, user.id);
+    return this.productsService.markAsUnavailable(id, user.id);
   }
 
+  /** @deprecated use POST /:id/sold */
   @Patch(':id/sold')
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
-  @ApiOperation({ summary: 'Mark product as sold' })
-  @ApiResponse({ status: 200, description: 'Product marked as sold' })
-  @ApiResponse({
-    status: 403,
-    description: 'Forbidden - Not the product owner',
-  })
-  @ApiResponse({ status: 404, description: 'Product not found' })
+  @ApiOperation({ summary: 'Deprecated: mark as sold', deprecated: true })
   async markAsSold(
     @Param('id', ParseUUIDPipe) id: string,
     @CurrentUser() user: User,
   ) {
-    this.logger.log(`User ${user.id} marking product ${id} as sold`);
-    return await this.productsService.markAsSold(id, user.id);
+    return this.productsService.markAsSold(id, user.id);
   }
 
   @Delete(':id')
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
-  @HttpCode(HttpStatus.NO_CONTENT)
-  @ApiOperation({ summary: 'Delete product' })
-  @ApiResponse({ status: 204, description: 'Product deleted successfully' })
-  @ApiResponse({
-    status: 403,
-    description: 'Forbidden - Not the product owner',
+  @ApiOperation({
+    summary:
+      'Soft delete. Removed from every list and search; wishlists show it as no longer available.',
   })
-  @ApiResponse({ status: 404, description: 'Product not found' })
-  @ApiResponse({ status: 401, description: 'Unauthorized' })
+  @ApiResponse({ status: 200, description: 'Deleted product (deletedAt set)' })
+  @ApiResponse({ status: 403, description: 'FORBIDDEN - not the owner' })
+  @ApiResponse({ status: 404, description: 'NOT_FOUND' })
   async remove(
     @Param('id', ParseUUIDPipe) id: string,
     @CurrentUser() user: User,
   ) {
     this.logger.log(`User ${user.id} deleting product: ${id}`);
-    await this.productsService.remove(id, user.id);
+    return this.productsService.remove(id, user.id);
   }
 }

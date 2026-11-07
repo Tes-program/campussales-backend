@@ -58,16 +58,9 @@ export class LoggingInterceptor implements NestInterceptor {
           this.logger.debug(`Response Data: ${JSON.stringify(data)}`);
         }
       }),
-      catchError((error) => {
-        const responseTime = Date.now() - now;
-
-        this.logger.error(
-          `Request Failed: ${method} ${url} - ${responseTime}ms`,
-          error.stack,
-        );
-
-        return throwError(() => error);
-      }),
+      // Failures are logged once, with the request id, by HttpExceptionFilter
+      // (4xx as warn, 5xx as error with stack).
+      catchError((error) => throwError(() => error)),
     );
   }
 

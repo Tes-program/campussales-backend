@@ -18,8 +18,12 @@ export class University {
   @Column({ nullable: true })
   location?: string;
 
+  /** Short name, e.g. UNILAG. Exposed as `shortName` by GET /api/schools. */
   @Column({ unique: true, nullable: true })
   code?: string;
+
+  @Column({ type: 'varchar', nullable: true })
+  city?: string | null;
 
   @Column({ default: true })
   isActive: boolean;

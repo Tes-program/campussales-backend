@@ -1,36 +1,24 @@
-// src/database/seeds/seed-categories.ts
-import { NestFactory } from '@nestjs/core';
-import { AppModule } from '../../app.module';
-import { CategoriesService } from '../../categories/categories.service';
-import { defaultCategories } from '../../categories/seeds/categories.seed';
+// npm run seed:categories — idempotent: inserts missing categories only.
+import { AppDataSource } from '../data-source';
+import { syncCategories } from './reference-data';
 
-async function seedCategories() {
-  const app = await NestFactory.createApplicationContext(AppModule);
-  const categoriesService = app.get(CategoriesService);
-
-  console.log('🌱 Seeding categories...');
-
+async function main() {
+  const o = AppDataSource.options as { host?: string; database?: string };
+  console.log(`Seeding categories into ${o.host}/${o.database}`);
+  await AppDataSource.initialize();
   try {
-    const createdCategories =
-      await categoriesService.bulkCreate(defaultCategories);
+    const { inserted } = await syncCategories(AppDataSource);
     console.log(
-      `✅ Successfully created ${createdCategories.length} categories`,
+      inserted.length
+        ? `Inserted: ${inserted.join(', ')}`
+        : 'Nothing to insert.',
     );
-
-    const allCategories = await categoriesService.findAll(true);
-    console.log(`📊 Total categories in database: ${allCategories.length}`);
-
-    allCategories.forEach((cat) => {
-      console.log(`   - ${cat.name} (${cat.slug})`);
-    });
-  } catch (error) {
-    console.error('❌ Error seeding categories:', error.message);
+  } finally {
+    await AppDataSource.destroy();
   }
-
-  await app.close();
 }
 
-seedCategories().catch((error) => {
-  console.error('Failed to seed categories:', error);
+main().catch((e) => {
+  console.error('Failed to seed categories:', e);
   process.exit(1);
 });

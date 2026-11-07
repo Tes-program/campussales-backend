@@ -1,111 +1,115 @@
-// src/users/dto/onboarding.dto.ts - UPDATE
-import { ApiProperty } from '@nestjs/swagger';
+// Schema for POST /api/users/onboarding/complete.
+// Canonical fields: phone, school, level. The deployed frontend still sends
+// phoneNumber / universityId; those are accepted as aliases and any error is
+// reported under the canonical name (fields.phone, fields.school).
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { Expose, Transform } from 'class-transformer';
+import { Allow, IsDateString, IsOptional, IsString } from 'class-validator';
+import { MSG } from '../../common/errors/messages';
+import { CATEGORY_SLUGS } from '../../common/constants/categories';
+import { GENDERS, LEVELS } from '../../common/constants/profile';
 import {
-  IsString,
-  IsOptional,
-  IsUUID,
-  IsDateString,
-  MaxLength,
-  MinLength,
-  IsEnum,
-} from 'class-validator';
-import { Transform } from 'class-transformer';
+  Normalise,
+  OptionalRule,
+  Rule,
+} from '../../common/validation/decorators';
+import {
+  makeValidateName,
+  normaliseGenderInput,
+  normaliseInterests,
+  normaliseLevelInput,
+  normalisePhoneInput,
+  normaliseText,
+  validateGender,
+  validateInterests,
+  validateLevel,
+  validatePhone,
+  validateSchoolRef,
+} from '../../common/validation/rules';
 
-// Add this enum to match your entity
-export enum Gender {
-  MALE = 'Male',
-  FEMALE = 'Female',
-}
+export type { Gender } from '../../common/constants/profile';
+
+const firstDefined = (...values: unknown[]) =>
+  values.find((v) => v !== undefined && v !== null && v !== '');
 
 export class CompleteOnboardingDto {
-  @ApiProperty({ example: 'John' })
-  @IsString()
-  @MinLength(2)
-  @MaxLength(50)
+  @ApiProperty({ example: 'Ada' })
+  @Normalise(normaliseText)
+  @Rule(makeValidateName(MSG.firstNameInvalid))
   firstName: string;
 
-  @ApiProperty({ example: 'Doe' })
-  @IsString()
-  @MinLength(2)
-  @MaxLength(50)
+  @ApiProperty({ example: 'Okafor' })
+  @Normalise(normaliseText)
+  @Rule(makeValidateName(MSG.lastNameInvalid))
   lastName: string;
 
-  @ApiProperty({ example: '123e4567-e89b-12d3-a456-426614174000' })
-  @IsUUID()
-  universityId: string;
-
-  @ApiProperty({ example: 'Babcock University', required: false })
-  @IsOptional()
-  @IsString()
-  @MaxLength(100)
-  universityName?: string;
-
-  // ✅ FIX: Add proper enum validation and transformation
   @ApiProperty({
-    example: 'Male',
-    enum: Gender,
-    description: 'Gender (Male or Female)',
-    required: false,
+    example: '0803 123 4567',
+    description:
+      'Nigerian mobile. Saved as +234XXXXXXXXXX. Alias: phoneNumber.',
   })
-  @IsOptional()
-  @IsEnum(Gender, { message: 'Gender must be either "Male" or "Female"' })
-  @Transform(({ value }: { value: unknown }) => {
-    // Capitalize first letter to match enum
-    if (typeof value === 'string') {
-      return value.charAt(0).toUpperCase() + value.slice(1).toLowerCase();
-    }
-    return value as Gender;
-  })
-  gender?: Gender;
+  @Expose()
+  @Transform(({ obj }) =>
+    normalisePhoneInput(firstDefined(obj.phone, obj.phoneNumber)),
+  )
+  @Rule(validatePhone)
+  phone: string;
 
-  // ✅ FIX: Validate interests as array
-  @ApiProperty({
-    example: ['Technology', 'Sports', 'Music'],
-    description: 'Array of user interests',
-    required: false,
-    type: [String],
-  })
-  @IsOptional()
-  @IsString({ each: true })
-  @Transform(({ value }: { value: unknown }) => {
-    // Handle if sent as JSON string
-    if (typeof value === 'string') {
-      try {
-        return JSON.parse(value) as string[];
-      } catch {
-        return value.split(',').map((i) => i.trim());
-      }
-    }
-    return value as string[];
-  })
-  interests?: string[];
-
-  @ApiProperty({
-    example: '+1234567890',
-    required: false,
-  })
-  @IsOptional()
-  @IsString()
-  @MinLength(7)
-  @MaxLength(15)
+  @ApiPropertyOptional({ deprecated: true, description: 'Alias of phone.' })
+  @Allow()
   phoneNumber?: string;
 
-  @ApiProperty({ example: '2000-01-01', required: false })
-  @IsOptional()
-  @IsDateString()
-  dateOfBirth?: Date;
-
   @ApiProperty({
-    example: 'Passionate about technology and innovation',
-    required: false,
+    description:
+      'School id from GET /api/schools (or exact name/short name). Alias: universityId.',
   })
+  @Expose()
+  @Transform(({ obj }) =>
+    normaliseText(firstDefined(obj.school, obj.universityId)),
+  )
+  @Rule(validateSchoolRef)
+  school: string;
+
+  @ApiPropertyOptional({ deprecated: true, description: 'Alias of school.' })
+  @Allow()
+  universityId?: string;
+
+  @ApiPropertyOptional({
+    deprecated: true,
+    description: 'Ignored; the canonical name is stored.',
+  })
+  @Allow()
+  universityName?: string;
+
+  @ApiProperty({ enum: LEVELS, example: '300' })
+  @Normalise(normaliseLevelInput)
+  @Rule(validateLevel)
+  level: string;
+
+  @ApiPropertyOptional({ enum: GENDERS })
+  @Normalise(normaliseGenderInput)
+  @Rule(validateGender)
+  gender?: string;
+
+  @ApiPropertyOptional({ type: [String], enum: CATEGORY_SLUGS, maxItems: 8 })
+  @Normalise(normaliseInterests)
+  @Rule(validateInterests)
+  interests?: string[];
+
+  @ApiPropertyOptional({ example: '2003-05-14' })
   @IsOptional()
-  @IsString()
-  @MaxLength(500)
+  @IsDateString({}, { message: 'Enter a valid date of birth.' })
+  dateOfBirth?: string;
+
+  @ApiPropertyOptional({ maxLength: 500 })
+  @Normalise(normaliseText)
+  @OptionalRule((v) =>
+    typeof v === 'string' && v.length <= 500 ? null : MSG.bioLong,
+  )
   bio?: string;
 
-  @ApiProperty({ required: false })
+  @ApiPropertyOptional()
   @IsOptional()
-  @IsString()
+  @IsString({ message: MSG.invalidValue })
   profilePictureUrl?: string;
 }

@@ -35,9 +35,7 @@ export class WishlistService {
       const { productId } = addToWishlistDto;
 
       if (!userId || !productId) {
-        throw new BadRequestException(
-          'User ID and Product ID are required',
-        );
+        throw new BadRequestException('User ID and Product ID are required');
       }
 
       // Check if product exists
@@ -46,15 +44,11 @@ export class WishlistService {
       });
 
       if (!product) {
-        throw new NotFoundException(
-          'Product not found or has been removed',
-        );
+        throw new NotFoundException('Product not found or has been removed');
       }
 
       if (!product.isAvailable) {
-        throw new BadRequestException(
-          'This product is no longer available',
-        );
+        throw new BadRequestException('This product is no longer available');
       }
 
       // Prevent users from adding their own products to wishlist
@@ -70,9 +64,7 @@ export class WishlistService {
       });
 
       if (existingWishlistItem) {
-        throw new ConflictException(
-          'This product is already in your wishlist',
-        );
+        throw new ConflictException('This product is already in your wishlist');
       }
 
       // Add to wishlist
@@ -121,29 +113,35 @@ export class WishlistService {
     });
 
     if (!wishlistItem) {
-      throw new NotFoundException(
-        'Product not found in your wishlist',
-      );
+      throw new NotFoundException('Product not found in your wishlist');
     }
 
     await this.wishlistRepository.remove(wishlistItem);
   }
 
   /**
-   * Get user's wishlist with pagination
+   * Get user's wishlist with pagination.
+   *
+   * Items whose product was sold, hidden or deleted stay in the list with
+   * `isUnavailable: true` and `unavailableMessage`, so the UI can show
+   * "No longer available" instead of a broken card. Deleted products are
+   * loaded with withDeleted so the card still has a title and photo.
    */
   async getUserWishlist(
     userId: string,
     page: number = 1,
     limit: number = 10,
   ): Promise<{
-    data: Wishlist[];
+    data: Array<
+      Wishlist & { isUnavailable: boolean; unavailableMessage: string | null }
+    >;
     total: number;
     page: number;
     limit: number;
     totalPages: number;
   }> {
-    const skip = (page - 1) * limit;
+    const validPage = page < 1 ? 1 : Number(page);
+    const validLimit = limit < 1 || limit > 100 ? 10 : Number(limit);
 
     const [wishlistItems, total] = await this.wishlistRepository.findAndCount({
       where: { userId },
@@ -154,22 +152,28 @@ export class WishlistService {
         'product.seller.profile',
         'product.category',
       ],
-      skip,
-      take: limit,
+      withDeleted: true,
+      skip: (validPage - 1) * validLimit,
+      take: validLimit,
       order: { createdAt: 'DESC' },
     });
 
-    // Filter out products that are no longer available (soft deleted)
-    const availableItems = wishlistItems.filter(
-      (item) => item.product && item.product.isAvailable !== false,
-    );
+    const data = wishlistItems.map((item) => {
+      const p = item.product;
+      const isUnavailable =
+        !p || !!p.deletedAt || p.isAvailable === false || p.isSold === true;
+      return Object.assign(item, {
+        isUnavailable,
+        unavailableMessage: isUnavailable ? 'No longer available' : null,
+      });
+    });
 
     return {
-      data: availableItems,
-      total: availableItems.length,
-      page,
-      limit,
-      totalPages: Math.ceil(total / limit),
+      data,
+      total,
+      page: validPage,
+      limit: validLimit,
+      totalPages: Math.ceil(total / validLimit),
     };
   }
 

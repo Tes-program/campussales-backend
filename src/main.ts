@@ -1,15 +1,10 @@
 import { NestFactory } from '@nestjs/core';
 import { ConfigService } from '@nestjs/config';
-import { ValidationPipe, Logger } from '@nestjs/common';
+import { Logger } from '@nestjs/common';
 import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
 import { NestExpressApplication } from '@nestjs/platform-express';
-import helmet from 'helmet';
-import compression from 'compression';
 import { AppModule } from './app.module';
-import { HttpExceptionFilter } from './common/filters/http-exception.filter';
-import { LoggingInterceptor } from './common/interceptors/logging.interceptor';
-import { TimeoutInterceptor } from './common/interceptors/timeout.interceptor';
-import { RequestIdInterceptor } from './common/interceptors/request-id.interceptor';
+import { configureApp } from './app.setup';
 import { RedisIoAdapter } from './common/adapters/redis-io.adapter';
 import { join } from 'path';
 
@@ -31,49 +26,11 @@ async function bootstrap() {
     // App still works with the default in-memory adapter (single-instance only)
   }
 
-  app.useGlobalFilters(new HttpExceptionFilter());
-
-  app.useGlobalInterceptors(
-    new LoggingInterceptor(),
-    new TimeoutInterceptor(),
-    new RequestIdInterceptor(),
-  );
-
-  // Security
-  app.use(
-    helmet({
-      crossOriginResourcePolicy: { policy: 'cross-origin' },
-    }),
-  );
-  app.use(compression());
-
-  // CORS
-  const corsOrigins = configService.get<string>('CORS_ORIGIN');
-  app.enableCors({
-    origin: corsOrigins ? corsOrigins.split(',').map((o) => o.trim()) : [],
-    credentials: true,
-  });
+  configureApp(app);
 
   app.useStaticAssets(join(__dirname, '..', 'uploads'), {
     prefix: '/uploads/',
   });
-
-  // Global validation
-  app.useGlobalPipes(
-    new ValidationPipe({
-      whitelist: true,
-      forbidNonWhitelisted: true,
-      transform: true,
-      disableErrorMessages: false,
-      validationError: {
-        target: false,
-        value: false,
-      },
-    }),
-  );
-
-  // API prefix
-  app.setGlobalPrefix('api');
 
   // Swagger documentation
   const config = new DocumentBuilder()

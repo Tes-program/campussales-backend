@@ -1,98 +1,155 @@
-import { ApiProperty } from '@nestjs/swagger';
+// Schemas for PATCH /api/users/me (UpdateMeDto) and the admin-only
+// PATCH /api/users/:id (UpdateUserDto). Same validators as onboarding.
+import { ApiPropertyOptional } from '@nestjs/swagger';
+import { Expose, Transform, Type } from 'class-transformer';
 import {
-  IsEmail,
-  IsString,
-  IsOptional,
-  IsEnum,
-  ValidateNested,
+  Allow,
   IsBoolean,
   IsDateString,
-  IsUUID,
+  IsEmail,
+  IsEnum,
+  IsOptional,
+  IsString,
+  ValidateNested,
 } from 'class-validator';
-import { Type } from 'class-transformer';
-import { UserType, UserStatus } from '../../common/enum/user.enums';
+import { MSG } from '../../common/errors/messages';
+import { UserStatus, UserType } from '../../common/enum/user.enums';
+import { CATEGORY_SLUGS } from '../../common/constants/categories';
+import { GENDERS, LEVELS } from '../../common/constants/profile';
+import { Normalise, OptionalRule } from '../../common/validation/decorators';
+import {
+  makeValidateName,
+  normaliseGenderInput,
+  normaliseInterests,
+  normaliseLevelInput,
+  normalisePhoneInput,
+  normaliseText,
+  validateGender,
+  validateInterests,
+  validateLevel,
+  validatePhone,
+  validateSchoolRef,
+} from '../../common/validation/rules';
 
-export class UpdateUserProfileDto {
-  @ApiProperty({ example: 'John', required: false })
-  @IsOptional()
-  @IsString()
+/** null or "" clears the phone number. */
+const validateOptionalPhone = (v: unknown) =>
+  v === null || v === '' ? null : validatePhone(v);
+
+export class UpdateMyProfileDto {
+  @ApiPropertyOptional()
+  @Normalise(normaliseText)
+  @OptionalRule(makeValidateName(MSG.firstNameInvalid))
   firstName?: string;
 
-  @ApiProperty({ example: 'Doe', required: false })
-  @IsOptional()
-  @IsString()
+  @ApiPropertyOptional()
+  @Normalise(normaliseText)
+  @OptionalRule(makeValidateName(MSG.lastNameInvalid))
   lastName?: string;
 
-  @ApiProperty({ example: '1990-01-01', required: false })
+  @ApiPropertyOptional()
   @IsOptional()
-  @IsDateString()
-  dateOfBirth?: Date;
+  @IsDateString({}, { message: 'Enter a valid date of birth.' })
+  dateOfBirth?: string;
 
-  @ApiProperty({ required: false })
+  @ApiPropertyOptional()
   @IsOptional()
-  @IsString()
+  @IsString({ message: MSG.invalidValue })
   profilePictureUrl?: string;
 
-  @ApiProperty({ required: false })
-  @IsOptional()
-  @IsUUID()
+  @ApiPropertyOptional({
+    description: 'School id or exact name. Alias: universityId.',
+  })
+  @Expose()
+  @Transform(({ obj }) => normaliseText(obj.school ?? obj.universityId))
+  @OptionalRule(validateSchoolRef)
+  school?: string;
+
+  @ApiPropertyOptional({ deprecated: true })
+  @Allow()
   universityId?: string;
 
-  @ApiProperty({ example: 'University of Example', required: false })
-  @IsOptional()
-  @IsString()
+  @ApiPropertyOptional({ deprecated: true, description: 'Ignored.' })
+  @Allow()
   universityName?: string;
 
-  @ApiProperty({ example: 'Computer Science', required: false })
-  @IsOptional()
-  @IsString()
-  department?: string;
+  @ApiPropertyOptional({ enum: LEVELS })
+  @Normalise(normaliseLevelInput)
+  @OptionalRule(validateLevel)
+  level?: string;
 
-  @ApiProperty({ example: 'undergraduate', required: false })
-  @IsOptional()
-  @IsString()
-  studentLevel?: string;
+  @ApiPropertyOptional({ enum: GENDERS, nullable: true })
+  @Normalise(normaliseGenderInput)
+  @OptionalRule(validateGender)
+  gender?: string | null;
 
-  @ApiProperty({ required: false })
-  @IsOptional()
-  @IsString()
-  bio?: string;
+  @ApiPropertyOptional({ type: [String], enum: CATEGORY_SLUGS, maxItems: 8 })
+  @Normalise(normaliseInterests)
+  @OptionalRule(validateInterests)
+  interests?: string[];
+
+  @ApiPropertyOptional({ maxLength: 500 })
+  @Normalise(normaliseText)
+  @OptionalRule((v) =>
+    v === null || (typeof v === 'string' && v.length <= 500)
+      ? null
+      : MSG.bioLong,
+  )
+  bio?: string | null;
 }
 
-export class UpdateUserDto {
-  @ApiProperty({ example: 'john.doe@university.edu', required: false })
+/** PATCH /api/users/me — what a student may change about themselves. */
+export class UpdateMeDto {
+  @ApiPropertyOptional()
   @IsOptional()
-  @IsEmail()
+  @IsEmail({}, { message: 'Enter a valid email address.' })
   email?: string;
 
-  @ApiProperty({ example: '+1234567890', required: false })
-  @IsOptional()
-  @IsString()
-  phoneNumber?: string;
+  @ApiPropertyOptional({
+    description:
+      'Nigerian mobile, saved as +234XXXXXXXXXX. null clears it. Alias: phoneNumber.',
+    nullable: true,
+  })
+  @Expose()
+  @Transform(({ obj }: { obj: Record<string, unknown> }) => {
+    const raw = obj.phone !== undefined ? obj.phone : obj.phoneNumber;
+    return raw === null || raw === '' ? raw : normalisePhoneInput(raw);
+  })
+  @OptionalRule(validateOptionalPhone)
+  phone?: string | null;
 
-  @ApiProperty({ enum: UserType, required: false })
+  @ApiPropertyOptional({ deprecated: true, description: 'Alias of phone.' })
+  @Allow()
+  phoneNumber?: string | null;
+
+  @ApiPropertyOptional({ type: UpdateMyProfileDto })
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => UpdateMyProfileDto)
+  profile?: UpdateMyProfileDto;
+}
+
+/** PATCH /api/users/:id — admin only. */
+export class UpdateUserDto extends UpdateMeDto {
+  @ApiPropertyOptional({ enum: UserType })
   @IsOptional()
   @IsEnum(UserType)
   userType?: UserType;
 
-  @ApiProperty({ enum: UserStatus, required: false })
+  @ApiPropertyOptional({ enum: UserStatus })
   @IsOptional()
   @IsEnum(UserStatus)
   status?: UserStatus;
 
-  @ApiProperty({ required: false })
+  @ApiPropertyOptional()
   @IsOptional()
   @IsBoolean()
   isVerified?: boolean;
 
-  @ApiProperty({ required: false })
+  @ApiPropertyOptional()
   @IsOptional()
   @IsBoolean()
   isActive?: boolean;
-
-  @ApiProperty({ type: UpdateUserProfileDto, required: false })
-  @IsOptional()
-  @ValidateNested()
-  @Type(() => UpdateUserProfileDto)
-  profile?: UpdateUserProfileDto;
 }
+
+/** @deprecated kept so existing imports compile */
+export { UpdateMyProfileDto as UpdateUserProfileDto };

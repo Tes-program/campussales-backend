@@ -26,8 +26,9 @@ export class User {
   @Exclude()
   passwordHash: string;
 
-  @Column({ nullable: true })
-  phoneNumber?: string;
+  /** Stored as +234XXXXXXXXXX (normalised on write since B1). */
+  @Column({ type: 'varchar', nullable: true })
+  phoneNumber?: string | null;
 
   @Column({
     type: 'enum',

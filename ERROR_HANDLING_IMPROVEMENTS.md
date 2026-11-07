@@ -1,5 +1,9 @@
 # Error Handling Improvements
 
+> **Superseded by B1.** The error body format below is legacy. The current
+> contract (`{ error: { code, message, fields, requestId } }`) is in
+> [docs/api.md](docs/api.md#1-errors).
+
 This document outlines the comprehensive error handling improvements made to the CampusSales backend application.
 
 ## Overview

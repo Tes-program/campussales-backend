@@ -4,16 +4,31 @@ import {
   ConflictException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { In, Not, Repository } from 'typeorm';
 import { User } from './entities/user.entity';
 import { UserProfile } from './entities/user-profile.entity';
 import { CreateUserDto } from './dto/create-user.dto';
-import { UpdateUserDto } from './dto/update-user.dto';
+import {
+  UpdateMeDto,
+  UpdateMyProfileDto,
+  UpdateUserDto,
+} from './dto/update-user.dto';
 import { UserStatus } from '../common/enum/user.enums';
 // import * as bcrypt from 'bcryptjs';
 import { OnboardingStatusDto } from './dto/check-status-onboarding.dto';
 import { CompleteOnboardingDto } from './dto/onboarding.dto';
 import { Logger } from '@nestjs/common';
+import { SchoolsService, PublicSchool } from '../universities/schools.service';
+import { conflict, ValidationFailed } from '../common/errors/app-errors';
+import { MSG } from '../common/errors/messages';
+import { Gender, Level } from '../common/constants/profile';
+
+/** Strips secrets before a user leaves the API. */
+export function toPublicUser<T extends User>(user: T): Omit<T, 'passwordHash'> {
+  const rest = { ...user } as Partial<T>;
+  delete rest.passwordHash;
+  return rest as Omit<T, 'passwordHash'>;
+}
 
 @Injectable()
 export class UsersService {
@@ -23,6 +38,7 @@ export class UsersService {
     @InjectRepository(UserProfile)
     private userProfileRepository: Repository<UserProfile>,
     private readonly logger: Logger,
+    private readonly schoolsService: SchoolsService,
   ) {}
 
   async create(createUserDto: CreateUserDto): Promise<User> {
@@ -123,76 +139,43 @@ export class UsersService {
     return user;
   }
 
-  async update(id: string, updateUserDto: UpdateUserDto): Promise<User> {
-    try {
-      if (!id) {
-        throw new NotFoundException('User ID is required');
+  /**
+   * Profile update for PATCH /users/me (UpdateMeDto) and the admin route
+   * (UpdateUserDto). Uses the same validators as onboarding; returns 409 when
+   * the phone number belongs to another account.
+   */
+  async update(id: string, dto: UpdateMeDto | UpdateUserDto): Promise<User> {
+    const user = await this.findByIdOrFail(id);
+
+    if (dto.email && dto.email !== user.email) {
+      const existingUser = await this.findByEmail(dto.email);
+      if (existingUser && existingUser.id !== id) {
+        throw conflict(MSG.emailTaken, { email: MSG.emailTaken });
       }
-
-      const user = await this.findByIdOrFail(id);
-
-      // Update user fields
-      if (updateUserDto.email && updateUserDto.email !== user.email) {
-        const existingUser = await this.findByEmail(updateUserDto.email);
-        if (existingUser && existingUser.id !== id) {
-          throw new ConflictException(
-            'Another user with this email already exists',
-          );
-        }
-        user.email = updateUserDto.email;
-      }
-
-      if (updateUserDto.phoneNumber !== undefined) {
-        user.phoneNumber = updateUserDto.phoneNumber;
-      }
-
-      if (updateUserDto.userType) {
-        user.userType = updateUserDto.userType;
-      }
-
-      if (updateUserDto.status) {
-        user.status = updateUserDto.status;
-      }
-
-      if (updateUserDto.isActive !== undefined) {
-        user.isActive = updateUserDto.isActive;
-      }
-
-      const updatedUser = await this.usersRepository.save(user);
-
-      // Update profile if provided
-      if (updateUserDto.profile) {
-        let profile = await this.userProfileRepository.findOne({
-          where: { userId: id },
-        });
-
-        if (profile) {
-          // Update existing profile
-          Object.assign(profile, updateUserDto.profile);
-          await this.userProfileRepository.save(profile);
-        } else {
-          // Create new profile
-          profile = this.userProfileRepository.create({
-            userId: id,
-            ...updateUserDto.profile,
-          });
-          await this.userProfileRepository.save(profile);
-        }
-
-        updatedUser.profile = profile;
-      }
-
-      // Reload with full relations (including university)
-      return await this.findByIdOrFail(updatedUser.id);
-    } catch (error) {
-      if (
-        error instanceof NotFoundException ||
-        error instanceof ConflictException
-      ) {
-        throw error;
-      }
-      throw new ConflictException('Failed to update user');
+      user.email = dto.email;
     }
+
+    if (dto.phone !== undefined) {
+      if (dto.phone) await this.assertPhoneAvailable(dto.phone, id);
+      user.phoneNumber = dto.phone || null;
+    }
+
+    if ('userType' in dto && dto.userType) user.userType = dto.userType;
+    if ('status' in dto && dto.status) user.status = dto.status;
+    if ('isActive' in dto && dto.isActive !== undefined)
+      user.isActive = dto.isActive;
+    if ('isVerified' in dto && dto.isVerified !== undefined)
+      user.isVerified = dto.isVerified;
+
+    // Save user columns only; the profile is handled below.
+    const userColumns = { ...user } as Partial<User>;
+    delete userColumns.profile;
+    await this.usersRepository.save(userColumns);
+
+    if (dto.profile) {
+      await this.saveProfile(id, await this.profileChanges(dto.profile));
+    }
+    return this.findByIdOrFail(id);
   }
 
   async updatePassword(id: string, newPassword: string): Promise<void> {
@@ -227,88 +210,115 @@ export class UsersService {
     return await this.usersRepository.save(user);
   }
 
-  // Add these methods to src/users/user.service.ts
-
-  // src/users/user.service.ts - UPDATE completeOnboarding method
+  /**
+   * Idempotent: the same payload twice returns 200 both times and leaves the
+   * profile unchanged.
+   */
   async completeOnboarding(
     userId: string,
-    onboardingDto: CompleteOnboardingDto,
-  ): Promise<User> {
-    try {
-      if (!userId) {
-        throw new NotFoundException('User ID is required');
-      }
+    dto: CompleteOnboardingDto,
+  ): Promise<User & { school: PublicSchool }> {
+    const user = await this.findByIdOrFail(userId);
 
-      // Validate required fields
-      if (!onboardingDto.firstName || !onboardingDto.lastName) {
-        throw new ConflictException('First name and last name are required');
-      }
+    const school = await this.schoolsService.resolve(dto.school);
+    if (!school) throw new ValidationFailed({ school: MSG.schoolInvalid });
 
-      const user = await this.findByIdOrFail(userId);
+    await this.assertPhoneAvailable(dto.phone, userId);
 
-      // Check if profile exists
-      let profile = await this.userProfileRepository.findOne({
-        where: { userId },
-      });
-
-      // ✅ FIX: Normalize gender to match enum
-      const normalizedGender = onboardingDto.gender
-        ? ((onboardingDto.gender.charAt(0).toUpperCase() +
-            onboardingDto.gender.slice(1).toLowerCase()) as 'Male' | 'Female')
-        : undefined;
-
-      // ✅ FIX: Handle interests array properly
-      const interestsArray = Array.isArray(onboardingDto.interests)
-        ? onboardingDto.interests
-        : onboardingDto.interests
-          ? [onboardingDto.interests]
-          : undefined;
-
-      const profileData = {
-        firstName: onboardingDto.firstName,
-        lastName: onboardingDto.lastName,
-        universityId: onboardingDto.universityId,
-        universityName: onboardingDto.universityName,
-        dateOfBirth: onboardingDto.dateOfBirth,
-        bio: onboardingDto.bio,
-        profilePictureUrl: onboardingDto.profilePictureUrl,
-        gender: normalizedGender,
-        interest: interestsArray, // Note: it's 'interest' not 'interests' in DB
-      };
-
-      if (profile) {
-        // Update existing profile
-        Object.assign(profile, profileData);
-        await this.userProfileRepository.save(profile);
-      } else {
-        // Create new profile
-        profile = this.userProfileRepository.create({
-          userId,
-          ...profileData,
-        });
-        await this.userProfileRepository.save(profile);
-      }
-
-      user.profile = profile;
-      return user;
-    } catch (error) {
-      if (
-        error instanceof NotFoundException ||
-        error instanceof ConflictException
-      ) {
-        throw error;
-      }
-
-      // ✅ FIX: Log the actual error for debugging
-      this.logger.error(
-        `Failed to complete onboarding for user ${userId}: ${error.message}`,
-        error.stack,
-      );
-
-      throw new ConflictException(
-        `Failed to complete onboarding: ${error.message}`,
+    if (user.phoneNumber !== dto.phone) {
+      await this.usersRepository.update(
+        { id: userId },
+        { phoneNumber: dto.phone },
       );
     }
+
+    await this.saveProfile(userId, {
+      firstName: dto.firstName,
+      lastName: dto.lastName,
+      universityId: school.id,
+      universityName: school.name,
+      level: dto.level as Level,
+      ...(dto.gender !== undefined ? { gender: dto.gender as Gender } : {}),
+      ...(dto.interests !== undefined ? { interests: dto.interests } : {}),
+      ...(dto.dateOfBirth !== undefined
+        ? { dateOfBirth: dto.dateOfBirth as unknown as Date }
+        : {}),
+      ...(dto.bio !== undefined ? { bio: dto.bio } : {}),
+      ...(dto.profilePictureUrl !== undefined
+        ? { profilePictureUrl: dto.profilePictureUrl }
+        : {}),
+    });
+
+    const fresh = await this.findByIdOrFail(userId);
+    return Object.assign(fresh, { school });
+  }
+
+  /**
+   * Throws 409 if another account already uses this number. Also matches the
+   * un-normalised forms older rows may still hold (0803..., 234803...).
+   */
+  async assertPhoneAvailable(e164: string, userId: string): Promise<void> {
+    const national = e164.replace(/^\+234/, '');
+    const variants = [e164, `0${national}`, `234${national}`];
+    const other = await this.usersRepository.findOne({
+      where: { phoneNumber: In(variants), id: Not(userId) },
+      select: ['id'],
+    });
+    if (other) throw conflict(MSG.phoneTaken, { phone: MSG.phoneTaken });
+  }
+
+  private async profileChanges(
+    p: UpdateMyProfileDto,
+  ): Promise<Partial<UserProfile>> {
+    const changes: Partial<UserProfile> = {};
+    if (p.firstName !== undefined) changes.firstName = p.firstName;
+    if (p.lastName !== undefined) changes.lastName = p.lastName;
+    if (p.dateOfBirth !== undefined)
+      changes.dateOfBirth = p.dateOfBirth as unknown as Date;
+    if (p.profilePictureUrl !== undefined)
+      changes.profilePictureUrl = p.profilePictureUrl;
+    if (p.bio !== undefined) changes.bio = p.bio ?? undefined;
+    if (p.level !== undefined) changes.level = p.level as Level;
+    if (p.gender !== undefined) changes.gender = (p.gender as Gender) ?? null;
+    if (p.interests !== undefined) changes.interests = p.interests;
+    if (p.school !== undefined) {
+      const school = await this.schoolsService.resolve(p.school);
+      if (!school)
+        throw new ValidationFailed({ 'profile.school': MSG.schoolInvalid });
+      changes.universityId = school.id;
+      changes.universityName = school.name;
+    }
+    return changes;
+  }
+
+  private async saveProfile(
+    userId: string,
+    changes: Partial<UserProfile>,
+  ): Promise<void> {
+    const profile = await this.userProfileRepository.findOne({
+      where: { userId },
+    });
+    if (profile) {
+      Object.assign(profile, changes);
+      await this.userProfileRepository.save(profile);
+      return;
+    }
+    if (!changes.firstName || !changes.lastName) {
+      throw new ValidationFailed({
+        ...(changes.firstName
+          ? {}
+          : { 'profile.firstName': MSG.firstNameInvalid }),
+        ...(changes.lastName
+          ? {}
+          : { 'profile.lastName': MSG.lastNameInvalid }),
+      });
+    }
+    await this.userProfileRepository.save(
+      this.userProfileRepository.create({
+        userId,
+        ...changes,
+      } as Partial<UserProfile>),
+    );
   }
 
   /**
