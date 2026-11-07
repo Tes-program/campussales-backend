@@ -150,10 +150,21 @@ export class WishlistService {
       { withDeleted: true },
     );
 
+    // Blocked users vanish from the wishlist too (either direction).
+    const blockedSellers = new Set(
+      (
+        await this.wishlistRepository.manager.query<{ id: string }[]>(
+          `SELECT CASE WHEN "blockerId" = $1 THEN "blockedId" ELSE "blockerId" END AS id
+             FROM "user_blocks" WHERE "blockerId" = $1 OR "blockedId" = $1`,
+          [userId],
+        )
+      ).map((r) => r.id),
+    );
+
     const items = rows
       .map((r) => {
         const card = cards.get(r.productId);
-        if (!card) return null;
+        if (!card || blockedSellers.has(card.sellerId)) return null;
         const deleted = !!r.product?.deletedAt;
         const available = !deleted && card.status === ProductStatus.ACTIVE;
         return {

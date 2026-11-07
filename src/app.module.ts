@@ -18,6 +18,9 @@ import { RateLimitModule } from './common/rate-limit/rate-limit.module';
 import { SearchModule } from './search/search.module';
 import { FeedModule } from './feed/feed.module';
 import { ShareModule } from './share/share.module';
+import { BlocksModule } from './blocks/blocks.module';
+import { ModerationModule } from './moderation/moderation.module';
+import { PrivacyModule } from './privacy/privacy.module';
 import { EmailModule } from './common/services/email.module';
 
 @Module({
@@ -86,6 +89,9 @@ import { EmailModule } from './common/services/email.module';
     SearchModule,
     FeedModule,
     ShareModule,
+    BlocksModule,
+    ModerationModule,
+    PrivacyModule,
   ],
 })
 export class AppModule {}

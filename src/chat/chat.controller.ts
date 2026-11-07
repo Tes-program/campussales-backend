@@ -1,4 +1,5 @@
 import { EmailVerifiedGuard } from '../auth/guards/email-verified.guard';
+import { conversationView } from './chat-views';
 import {
   Controller,
   Get,
@@ -70,7 +71,7 @@ export class ChatController {
       res.status(HttpStatus.CREATED);
     }
 
-    return conversation;
+    return conversationView(conversation, user.id);
   }
 
   @Get('conversations')
@@ -113,7 +114,7 @@ export class ChatController {
     if (!conversation) {
       throw new NotFoundException('Conversation not found');
     }
-    return conversation;
+    return conversationView(conversation, user.id);
   }
 
   @Get('conversations/:id')
@@ -125,7 +126,10 @@ export class ChatController {
     @CurrentUser() user: User,
     @Param('id', ParseUUIDPipe) id: string,
   ) {
-    return await this.chatService.getConversationById(id, user.id);
+    return conversationView(
+      await this.chatService.getConversationById(id, user.id),
+      user.id,
+    );
   }
 
   @Delete('conversations/:id')

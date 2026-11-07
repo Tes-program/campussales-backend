@@ -8,6 +8,9 @@ process.env.FRONTEND_URL = 'https://campus-sales.test';
 // Lets tests vary the client IP with X-Forwarded-For.
 process.env.TRUST_PROXY = '1';
 process.env.AUTH_ROTATION_GRACE_MS = '0';
+// Fixtures create many listings per seller; the B4 spam test restores the defaults.
+process.env.MODERATION_SPAM_PER_HOUR = '100000';
+process.env.MODERATION_SPAM_PER_DAY = '100000';
 // Never send real email from tests.
 process.env.EMAIL_USER = '';
 process.env.EMAIL_PASSWORD = '';

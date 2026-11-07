@@ -88,6 +88,30 @@ export class User {
   @Column({ type: 'uuid', nullable: true })
   signupSchoolId?: string | null;
 
+  /** Posting paused (repeat offender or admin). Reason is shown to the user. */
+  @Column({ type: 'timestamp', nullable: true })
+  postingSuspendedAt?: Date | null;
+
+  @Column({ type: 'varchar', length: 300, nullable: true })
+  postingSuspendedReason?: string | null;
+
+  /** Surfaced in the admin queue (e.g. chat scam signals). Internal. */
+  @Column({ type: 'timestamp', nullable: true })
+  needsReviewAt?: Date | null;
+
+  @Column({ type: 'varchar', length: 300, nullable: true })
+  needsReviewReason?: string | null;
+
+  /** Account deletion requested; hard delete/anonymise after 30 days. */
+  @Column({ type: 'timestamp', nullable: true })
+  deletionRequestedAt?: Date | null;
+
+  @Column({ type: 'varchar', length: 32, nullable: true })
+  acceptedPrivacyVersion?: string | null;
+
+  @Column({ type: 'timestamp', nullable: true })
+  acceptedPrivacyAt?: Date | null;
+
   /** Updated at most every 5 minutes on authenticated requests. */
   @Column({ type: 'timestamp', nullable: true })
   lastActiveAt?: Date | null;

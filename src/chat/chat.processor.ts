@@ -66,10 +66,12 @@ export class ChatProcessor extends WorkerHost {
       `Processing message from ${senderId} in conversation ${conversationId}`,
     );
 
+    // The gateway already ran the checks and counted the rate limit.
     const message = await this.chatService.sendMessage(
       conversationId,
       senderId,
       dto as any,
+      { rateAlreadyCounted: true },
     );
 
     // Return the saved message so the gateway can emit events

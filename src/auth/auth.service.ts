@@ -179,6 +179,12 @@ export class AuthService {
       throw invalidCredentials();
     }
 
+    // Logging in during the 30-day deletion grace cancels the deletion.
+    if (user.deletionRequestedAt) {
+      await this.users.update({ id: user.id }, { deletionRequestedAt: null });
+      user.deletionRequestedAt = null;
+    }
+
     if (!user.isActive || user.status !== UserStatus.ACTIVE) {
       throw new AppError(
         ErrorCode.UNAUTHENTICATED,

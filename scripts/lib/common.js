@@ -21,6 +21,7 @@ require('ts-node').register({
   },
 });
 const rules = require('../../src/common/validation/rules');
+const { screenListing } = require('../../src/moderation/screening');
 const { LISTING_LIMITS } = require('../../src/common/constants/listing');
 const {
   resolveCategorySlug,
@@ -79,6 +80,7 @@ async function loadProducts(client) {
            p."price"::text AS price, p."quantity", p."isAvailable",
            ${hasIsSold ? 'p."isSold"' : 'false AS "isSold"'},
            ${hasStatus ? 'p."status"' : 'NULL AS status'},
+           ${(await columnExists(client, 'products', 'moderationStatus')) ? 'p."moderationStatus", p."tags"' : `'approved' AS "moderationStatus", '[]'::jsonb AS tags`},
            p."createdAt",
            (SELECT count(*)::int FROM "product_images" i WHERE i."productId" = p."id") AS "imageCount"
       FROM "products" p
@@ -126,6 +128,7 @@ function outDir(prefix) {
 }
 
 module.exports = {
+  screenListing,
   resolveCategorySlug,
   dbConfig,
   rules,

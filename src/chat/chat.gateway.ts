@@ -274,6 +274,33 @@ export class ChatGateway
           messageDto.type.toLowerCase() as SendMessageDto['type'];
       }
 
+      // Same checks as REST (blocks, length, 30/min) before queueing, so the
+      // sender gets the standard error code straight away.
+      try {
+        messageDto.content = await this.chatService.assertCanSend(
+          conversationId,
+          client.userId,
+          messageDto,
+        );
+      } catch (e) {
+        const res = (e as { getResponse?: () => unknown }).getResponse?.() as
+          | {
+              code?: string;
+              message?: string;
+              fields?: Record<string, string>;
+              retryAfterSeconds?: number;
+            }
+          | undefined;
+        client.emit('message:error', {
+          conversationId,
+          code: res?.code ?? 'SEND_FAILED',
+          error: res?.message ?? 'Message could not be sent.',
+          fields: res?.fields,
+          retryAfterSeconds: res?.retryAfterSeconds,
+        });
+        return;
+      }
+
       // Enqueue the message for reliable, async processing
       const job = await this.chatQueue.add(
         'send-message',

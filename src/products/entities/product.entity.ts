@@ -85,6 +85,13 @@ export class Product {
   @Column({ type: 'jsonb', default: () => "'[]'" })
   priceHistory: PriceChange[];
 
+  /** Screening / review result (B4). Only `approved` items can be public. */
+  @Column({ type: 'varchar', length: 20, default: 'approved' })
+  moderationStatus: 'approved' | 'needs_review' | 'rejected';
+
+  @Column({ type: 'jsonb', default: () => "'[]'" })
+  moderationReasons: { code: string; message: string; at?: string }[];
+
   /** Last time relist bumped createdAt (max once per 24h). */
   @Column({ type: 'timestamp', nullable: true })
   lastBumpedAt?: Date | null;

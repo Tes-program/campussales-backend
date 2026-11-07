@@ -23,6 +23,23 @@ import {
   ConversationType,
 } from './enums/chat.enums';
 import { NotificationsService } from '../notifications/notifications.service';
+import { BlocksService } from '../blocks/blocks.service';
+import { RateLimitService } from '../common/rate-limit/rate-limit.service';
+import {
+  rateLimited,
+  ValidationFailed,
+  notFound,
+} from '../common/errors/app-errors';
+import { Product } from '../products/entities/product.entity';
+import { User } from '../users/entities/user.entity';
+import { messageView, MessageView } from './chat-views';
+import { scanMessage, SCAM_REVIEW_THRESHOLD } from './scam-signals';
+
+export const CHAT_LIMITS = {
+  messageMaxLength: 1000,
+  messagesPerMinute: 30,
+  newConversationsPerHour: 10,
+} as const;
 
 @Injectable()
 export class ChatService {
@@ -36,6 +53,8 @@ export class ChatService {
     @InjectRepository(Message)
     private messageRepo: Repository<Message>,
     private readonly notificationsService: NotificationsService,
+    private readonly blocks: BlocksService,
+    private readonly rateLimit: RateLimitService,
   ) {}
 
   /**
@@ -57,12 +76,28 @@ export class ChatService {
       );
     }
 
+    const other = await this.conversationRepo.manager
+      .getRepository(User)
+      .findOne({ where: { id: dto.participantId } });
+    if (!other) throw notFound("We couldn't find that person.");
+    await this.blocks.assertNotBlocked(userId, dto.participantId);
+    const context = dto.productId
+      ? await this.listingContextFor(dto.productId)
+      : null;
+
     // Check if a conversation already exists between these two users
     const existing = await this.findExistingDirectConversation(
       userId,
       dto.participantId,
     );
     if (existing) {
+      if (context) {
+        await this.conversationRepo.update(existing.id, {
+          ...context,
+          closedAt: null,
+          closedReason: null,
+        });
+      }
       const conversation = await this.getConversationById(existing.id, userId);
       return {
         conversation,
@@ -71,9 +106,22 @@ export class ChatService {
       };
     }
 
-    // Create new conversation — productId is NOT stored on the conversation
+    const limit = await this.rateLimit.consume(
+      RateLimitService.key('chat-new', userId),
+      CHAT_LIMITS.newConversationsPerHour,
+      3_600_000,
+    );
+    if (!limit.allowed) {
+      throw rateLimited(
+        "You've started a lot of chats in the last hour. Please try again a bit later.",
+        limit.retryAfterSeconds,
+      );
+    }
+
+    // One conversation per user pair; it carries the latest listing context.
     const conversation = this.conversationRepo.create({
       type: dto.type || ConversationType.DIRECT,
+      ...(context ?? {}),
     });
     const saved = await this.conversationRepo.save(conversation);
 
@@ -134,7 +182,13 @@ export class ChatService {
   async getConversations(
     userId: string,
     filterDto: FilterConversationsDto,
-  ): Promise<{ data: any[]; total: number; page: number; limit: number }> {
+  ): Promise<{
+    data: any[];
+    total: number;
+    page: number;
+    limit: number;
+    totalUnread: number;
+  }> {
     const page = filterDto.page ?? 1;
     const limit = filterDto.limit ?? 10;
 
@@ -148,6 +202,14 @@ export class ChatService {
       .createQueryBuilder('c')
       .where(`c.id IN (${participantQb.getQuery()})`)
       .setParameters(participantQb.getParameters())
+      // Chats with blocked users (either direction) are hidden.
+      .andWhere(
+        `NOT EXISTS (SELECT 1 FROM "conversation_participants" op
+                       JOIN "user_blocks" ub ON (ub."blockerId" = :userId AND ub."blockedId" = op."userId")
+                                             OR (ub."blockedId" = :userId AND ub."blockerId" = op."userId")
+                      WHERE op."conversationId" = c.id AND op."userId" <> :userId)`,
+        { userId },
+      )
       .leftJoinAndSelect('c.participants', 'p')
       .leftJoinAndSelect('p.user', 'u')
       .leftJoinAndSelect('u.profile', 'profile')
@@ -180,15 +242,14 @@ export class ChatService {
           order: { createdAt: 'DESC' },
           relations: ['product', 'product.images'],
         });
-        const lastReferencedProduct =
-          lastProductMessage?.product
-            ? {
-                id: lastProductMessage.product.id,
-                title: lastProductMessage.product.title,
-                price: lastProductMessage.product.price,
-                images: lastProductMessage.product.images,
-              }
-            : null;
+        const lastReferencedProduct = lastProductMessage?.product
+          ? {
+              id: lastProductMessage.product.id,
+              title: lastProductMessage.product.title,
+              price: lastProductMessage.product.price,
+              images: lastProductMessage.product.images,
+            }
+          : null;
 
         return {
           id: conv.id,
@@ -214,24 +275,41 @@ export class ChatService {
                 type: lastMessage.type,
                 senderId: lastMessage.senderId,
                 status: lastMessage.status,
-                createdAt: lastMessage.createdAt,
+                createdAt: lastMessage.createdAt.toISOString(),
               }
             : null,
           lastReferencedProduct,
+          listing: conv.productId
+            ? {
+                productId: conv.productId,
+                title: conv.productTitle ?? null,
+                coverImageUrl: conv.productImageUrl ?? null,
+                priceAtStart: conv.productPrice ?? null,
+              }
+            : null,
+          closed: !!conv.closedAt,
+          closedReason: conv.closedReason ?? null,
           unreadCount,
-          updatedAt: conv.updatedAt,
-          createdAt: conv.createdAt,
+          updatedAt: conv.updatedAt.toISOString(),
+          createdAt: conv.createdAt.toISOString(),
         };
       }),
     );
 
     // Filter unread-only if requested
+    const totalUnread = await this.getTotalUnreadCount(userId);
     if (filterDto.filter === ConversationFilter.UNREAD) {
       const filtered = data.filter((c) => c.unreadCount > 0);
-      return { data: filtered, total: filtered.length, page, limit };
+      return {
+        data: filtered,
+        total: filtered.length,
+        page,
+        limit,
+        totalUnread,
+      };
     }
 
-    return { data, total, page, limit };
+    return { data, total, page, limit, totalUnread };
   }
 
   async getConversationById(
@@ -259,7 +337,12 @@ export class ChatService {
     conversationId: string,
     userId: string,
     filterDto: FilterMessagesDto,
-  ): Promise<{ data: Message[]; total: number; page: number; limit: number }> {
+  ): Promise<{
+    data: MessageView[];
+    total: number;
+    page: number;
+    limit: number;
+  }> {
     const page = filterDto.page ?? 1;
     const limit = filterDto.limit ?? 30;
 
@@ -280,21 +363,72 @@ export class ChatService {
       take: limit,
     });
 
-    return { data: data.reverse(), total, page, limit };
+    return { data: data.reverse().map(messageView), total, page, limit };
+  }
+
+  /**
+   * Every check a send must pass (REST and sockets): participant, not
+   * blocked, content rules, and (unless already counted) the 30/minute limit.
+   * Returns the cleaned content.
+   */
+  async assertCanSend(
+    conversationId: string,
+    senderId: string,
+    dto: SendMessageDto,
+    opts: { countRate?: boolean } = { countRate: true },
+  ): Promise<string> {
+    const conversation = await this.getConversationById(
+      conversationId,
+      senderId,
+    );
+    for (const p of conversation.participants) {
+      if (p.userId !== senderId)
+        await this.blocks.assertNotBlocked(senderId, p.userId);
+    }
+    if (dto.type === MessageType.SYSTEM) {
+      throw new ValidationFailed({ type: 'Choose text, image or file.' });
+    }
+    const content = typeof dto.content === 'string' ? dto.content.trim() : '';
+    if (!content && !dto.attachmentUrl) {
+      throw new ValidationFailed({ content: 'Type a message.' });
+    }
+    if (Array.from(content).length > CHAT_LIMITS.messageMaxLength) {
+      throw new ValidationFailed({
+        content: `Messages can be up to ${CHAT_LIMITS.messageMaxLength} characters.`,
+      });
+    }
+    if (opts.countRate !== false) {
+      const limit = await this.rateLimit.consume(
+        RateLimitService.key('chat-msg', senderId),
+        CHAT_LIMITS.messagesPerMinute,
+        60_000,
+      );
+      if (!limit.allowed) {
+        throw rateLimited(
+          "You're sending messages very fast. Please slow down.",
+          limit.retryAfterSeconds,
+        );
+      }
+    }
+    return content;
   }
 
   async sendMessage(
     conversationId: string,
     senderId: string,
     dto: SendMessageDto,
-  ): Promise<Message> {
-    // Verify sender is a participant
-    await this.getConversationById(conversationId, senderId);
+    opts: { rateAlreadyCounted?: boolean } = {},
+  ): Promise<MessageView> {
+    const content = await this.assertCanSend(conversationId, senderId, dto, {
+      countRate: !opts.rateAlreadyCounted,
+    });
+    const flags = scanMessage(content);
 
     const message = this.messageRepo.create({
       conversationId,
       senderId,
-      content: dto.content,
+      content,
+      flags,
       type: dto.type || MessageType.TEXT,
       status: MessageStatus.SENT,
       attachmentUrl: dto.attachmentUrl,
@@ -326,8 +460,52 @@ export class ChatService {
       (err) =>
         this.logger.error('Failed to send message notifications', err.stack),
     );
+    if (flags.length) {
+      this.reviewIfRepeatedSignals(senderId).catch(() => undefined);
+    }
 
-    return fullMessage;
+    return messageView(fullMessage);
+  }
+
+  /**
+   * Flags only: if one account sent flagged messages in more than 5
+   * conversations in 24h, surface the account in the admin queue.
+   */
+  private async reviewIfRepeatedSignals(senderId: string): Promise<void> {
+    const [row] = await this.messageRepo.query<{ n: number }[]>(
+      `SELECT count(DISTINCT "conversationId")::int AS n FROM "messages"
+        WHERE "senderId" = $1 AND "flags" <> '[]'::jsonb
+          AND "createdAt" > now() - ($2 || ' hours')::interval`,
+      [senderId, String(SCAM_REVIEW_THRESHOLD.windowHours)],
+    );
+    if ((row?.n ?? 0) > SCAM_REVIEW_THRESHOLD.conversations) {
+      await this.messageRepo.query(
+        `UPDATE "users" SET "needsReviewAt" = now(),
+                "needsReviewReason" = 'Possible scam patterns in chat messages across many conversations'
+          WHERE "id" = $1 AND "needsReviewAt" IS NULL`,
+        [senderId],
+      );
+    }
+  }
+
+  /** Listing snapshot stored on the conversation (title, cover, price at the time). */
+  private async listingContextFor(productId: string) {
+    const p = await this.conversationRepo.manager
+      .getRepository(Product)
+      .findOne({ where: { id: productId }, relations: ['images'] });
+    if (!p) throw notFound('This item is no longer available.');
+    const cover =
+      [...(p.images ?? [])].sort(
+        (a, b) =>
+          Number(b.isPrimary) - Number(a.isPrimary) ||
+          a.sortOrder - b.sortOrder,
+      )[0]?.imageUrl ?? null;
+    return {
+      productId: p.id,
+      productTitle: p.title,
+      productImageUrl: cover,
+      productPrice: Number(p.price),
+    };
   }
 
   /**
@@ -431,16 +609,21 @@ export class ChatService {
     return qb.getCount();
   }
 
+  /** One query: unread messages across the user's visible conversations. */
   async getTotalUnreadCount(userId: string): Promise<number> {
-    const participants = await this.participantRepo.find({
-      where: { userId },
-    });
-
-    let total = 0;
-    for (const p of participants) {
-      total += await this.getUnreadCount(p.conversationId, userId);
-    }
-    return total;
+    const [row] = await this.messageRepo.query<{ n: number }[]>(
+      `SELECT count(*)::int AS n
+         FROM "messages" m
+         JOIN "conversation_participants" cp
+           ON cp."conversationId" = m."conversationId" AND cp."userId" = $1
+        WHERE m."senderId" <> $1
+          AND (cp."lastReadAt" IS NULL OR m."createdAt" > cp."lastReadAt")
+          AND NOT EXISTS (SELECT 1 FROM "user_blocks" ub
+                           WHERE (ub."blockerId" = $1 AND ub."blockedId" = m."senderId")
+                              OR (ub."blockedId" = $1 AND ub."blockerId" = m."senderId"))`,
+      [userId],
+    );
+    return row?.n ?? 0;
   }
 
   async deleteConversation(
@@ -458,7 +641,12 @@ export class ChatService {
     searchTerm: string,
     page: number = 1,
     limit: number = 20,
-  ): Promise<{ data: Message[]; total: number; page: number; limit: number }> {
+  ): Promise<{
+    data: MessageView[];
+    total: number;
+    page: number;
+    limit: number;
+  }> {
     // Verify user is a participant
     await this.getConversationById(conversationId, userId);
 
@@ -478,7 +666,7 @@ export class ChatService {
       .take(limit)
       .getManyAndCount();
 
-    return { data: data.reverse(), total, page, limit };
+    return { data: data.reverse().map(messageView), total, page, limit };
   }
 
   // ---- Private helpers ----

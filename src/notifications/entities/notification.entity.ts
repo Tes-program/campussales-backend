@@ -52,6 +52,9 @@ export class Notification {
   @Column({ default: false })
   isRead: boolean;
 
+  @Column({ type: 'timestamp', nullable: true })
+  readAt?: Date | null;
+
   @Column({ type: 'jsonb', nullable: true })
   metadata?: {
     conversationId?: string;

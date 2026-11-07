@@ -22,6 +22,26 @@ export class Conversation {
   })
   type: ConversationType;
 
+  /** Listing this chat is about, frozen at the time (B4). */
+  @Column({ type: 'uuid', nullable: true })
+  productId?: string | null;
+
+  @Column({ type: 'varchar', length: 255, nullable: true })
+  productTitle?: string | null;
+
+  @Column({ type: 'varchar', nullable: true })
+  productImageUrl?: string | null;
+
+  @Column({ type: 'integer', nullable: true })
+  productPrice?: number | null;
+
+  /** Set when the item is sold or deleted. Messaging still works. */
+  @Column({ type: 'timestamp', nullable: true })
+  closedAt?: Date | null;
+
+  @Column({ type: 'varchar', length: 32, nullable: true })
+  closedReason?: string | null;
+
   @CreateDateColumn()
   createdAt: Date;
 

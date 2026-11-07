@@ -9,6 +9,8 @@ import { ProductStatus } from '../common/constants/listing';
 import { notFound } from '../common/errors/app-errors';
 import { MSG } from '../common/errors/messages';
 import { blockedEitherWay } from '../blocks/user-block.entity';
+import { reportedByViewer } from '../moderation/reports.service';
+import { ModerationService } from '../moderation/moderation.service';
 import { buildTsQuery } from '../search/query-parser';
 import { searchDocument } from '../search/search-sql';
 import { SearchService } from '../search/search.service';
@@ -214,6 +216,8 @@ export class ListingService {
     });
     if (!p) throw notFound(MSG.productNotFound);
     const isOwner = !!viewer && viewer.id === p.sellerId;
+    if (!isOwner && p.moderationStatus !== 'approved')
+      throw notFound(MSG.productNotFound);
     if (!isOwner && p.status === ProductStatus.NEEDS_REVIEW)
       throw notFound(MSG.productNotFound);
 
@@ -284,7 +288,14 @@ export class ListingService {
           }
         : null,
       ...(viewer ? { isOwner, isWishlisted: !!stats.isWishlisted } : {}),
-      ...(isOwner ? { wishlistCount: stats.wishlistCount ?? 0 } : {}),
+      ...(isOwner
+        ? {
+            wishlistCount: stats.wishlistCount ?? 0,
+            moderationStatus: p.moderationStatus,
+            moderationReasons: p.moderationReasons ?? [],
+            moderationNote: ModerationService.ownerNote(p),
+          }
+        : {}),
     };
   }
 
@@ -310,7 +321,9 @@ export class ListingService {
     if (viewer) {
       qb.andWhere('p."sellerId" <> :viewerId', {
         viewerId: viewer.id,
-      }).andWhere(`NOT ${blockedEitherWay('p."sellerId"')}`);
+      })
+        .andWhere(`NOT ${blockedEitherWay('p."sellerId"')}`)
+        .andWhere(`NOT ${reportedByViewer('p')}`);
     }
     qb.orderBy(`(p."campusId" IS NOT DISTINCT FROM :campus)`, 'DESC')
       .setParameter('campus', p.campusId ?? null)
@@ -396,7 +409,7 @@ export class ListingService {
     if (viewer) {
       qb.andWhere(`NOT ${blockedEitherWay('p."sellerId"')}`, {
         viewerId: viewer.id,
-      });
+      }).andWhere(`NOT ${reportedByViewer('p')}`);
     }
     if (search) {
       qb.andWhere(

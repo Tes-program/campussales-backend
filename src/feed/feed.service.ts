@@ -45,6 +45,9 @@ export class FeedService {
           AND NOT EXISTS (SELECT 1 FROM "user_blocks" b
                            WHERE (b."blockerId" = $1 AND b."blockedId" = p."sellerId")
                               OR (b."blockedId" = $1 AND b."blockerId" = p."sellerId"))
+          AND NOT EXISTS (SELECT 1 FROM "reports" rr WHERE rr."reporterId" = $1 AND (
+                (rr."targetType" = 'listing' AND rr."targetId" = p."id") OR
+                (rr."targetType" = 'user' AND rr."targetId" = p."sellerId")))
         ORDER BY (p."campusId" IS NOT DISTINCT FROM $2) DESC, p."createdAt" DESC
         LIMIT ${FEED_POOL}`,
       [viewer.id, campusId],

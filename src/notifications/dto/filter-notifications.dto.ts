@@ -1,4 +1,12 @@
-import { IsOptional, IsEnum, IsInt, Min, Max } from 'class-validator';
+import {
+  IsOptional,
+  IsEnum,
+  IsInt,
+  Min,
+  Max,
+  IsString,
+  MaxLength,
+} from 'class-validator';
 import { Type } from 'class-transformer';
 import { ApiProperty } from '@nestjs/swagger';
 
@@ -26,4 +34,13 @@ export class FilterNotificationsDto {
   @IsOptional()
   @IsEnum(['all', 'unread'])
   type?: 'all' | 'unread' = 'all';
+
+  @ApiProperty({
+    required: false,
+    description: 'nextCursor from the previous page.',
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(300)
+  cursor?: string;
 }

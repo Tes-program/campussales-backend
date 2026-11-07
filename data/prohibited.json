@@ -1,0 +1,155 @@
+{
+  "_comment": "Listing screening keywords (B4). 'block': clearly prohibited, listing is rejected with the category message. 'review': often innocent (kitchen knife, glue gun), listing goes to needs_review for a person to check. Matching is whole-word and catches common obfuscation (digits for letters, spaced or dotted letters). Keep entries lowercase. Changes apply on API restart. Review this list with the team regularly.",
+  "categories": {
+    "weapons": {
+      "message": "Weapons and ammunition can't be sold on CampusSales.",
+      "block": [
+        "pistol",
+        "rifle",
+        "shotgun",
+        "revolver",
+        "firearm",
+        "firearms",
+        "ammunition",
+        "ammo",
+        "bullets",
+        "ak47",
+        "ak-47",
+        "gunpowder",
+        "grenade",
+        "machete for fight",
+        "locally made gun",
+        "dane gun"
+      ],
+      "review": [
+        "gun",
+        "knife",
+        "dagger",
+        "taser",
+        "pepper spray",
+        "airsoft",
+        "machete",
+        "cutlass",
+        "sword",
+        "bow and arrow"
+      ]
+    },
+    "drugs": {
+      "message": "Drugs and controlled substances can't be sold on CampusSales.",
+      "block": [
+        "cocaine",
+        "heroin",
+        "meth",
+        "methamphetamine",
+        "crystal meth",
+        "mdma",
+        "ecstasy",
+        "lsd",
+        "tramadol",
+        "codeine syrup",
+        "skunk",
+        "loud weed",
+        "cannabis",
+        "marijuana",
+        "shisha with weed",
+        "rohypnol"
+      ],
+      "review": [
+        "weed",
+        "kush",
+        "vape",
+        "codeine",
+        "rizla",
+        "hookah",
+        "shisha",
+        "edibles",
+        "pills",
+        "molly water"
+      ]
+    },
+    "counterfeit": {
+      "message": "Fake or counterfeit goods can't be sold on CampusSales.",
+      "block": [
+        "counterfeit",
+        "fake naira",
+        "fake currency",
+        "fake dollars",
+        "cloned card",
+        "fake id",
+        "fake certificate",
+        "fake transcript"
+      ],
+      "review": [
+        "replica",
+        "first copy",
+        "mirror copy",
+        "aaa grade",
+        "class a copy",
+        "inspired by",
+        "unlocked imei"
+      ]
+    },
+    "exam_cheating": {
+      "message": "Exam leaks and cheating services can't be offered on CampusSales.",
+      "block": [
+        "exam leak",
+        "leaked questions",
+        "runz",
+        "exam runs",
+        "answer booklet",
+        "write your exam",
+        "write exam for you",
+        "impersonation",
+        "sorting lecturer",
+        "buy marks",
+        "result upgrade",
+        "assignment for sale",
+        "project writing service"
+      ],
+      "review": [
+        "past questions with answers",
+        "exam answers",
+        "assignment help",
+        "write your project",
+        "project topics and materials",
+        "expo"
+      ]
+    },
+    "adult": {
+      "message": "Adult content and services can't be listed on CampusSales.",
+      "block": [
+        "escort",
+        "hookup",
+        "nudes",
+        "porn",
+        "sex toy",
+        "sex service",
+        "runs girl",
+        "olosho"
+      ],
+      "review": [
+        "adult",
+        "18+",
+        "lingerie",
+        "massage service"
+      ]
+    },
+    "stolen": {
+      "message": "Stolen goods can't be sold on CampusSales.",
+      "block": [
+        "no papers",
+        "found phone",
+        "icloud locked",
+        "blacklisted phone",
+        "without documents"
+      ],
+      "review": [
+        "no receipt",
+        "locked phone",
+        "bypass",
+        "network locked",
+        "stolen"
+      ]
+    }
+  }
+}

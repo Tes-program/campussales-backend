@@ -16,6 +16,9 @@
 //                                                       and re-activate it)
 //   3. phone numbers that parse as Nigerian mobiles -> normalised to +234XXXXXXXXXX
 //      (numbers that don't parse are left alone and reported)
+//   4. with --screening (B4): runs the listing screening rules on approved,
+//      live listings; anything not approved goes to needs_review (even
+//      clearly prohibited ones: a moderator decides, nothing is deleted)
 //
 // Requires the B1 migration (products.status) to have run first.
 // Every change is written to scripts/out/fix-<timestamp>/changes.csv with the
@@ -24,6 +27,7 @@
 const path = require('path');
 const fs = require('fs');
 const {
+  screenListing,
   dbConfig,
   rules,
   parseArgs,
@@ -37,7 +41,7 @@ const {
   outDir,
 } = require('./lib/common');
 
-function planChanges(products, users) {
+function planChanges(products, users, opts = {}) {
   const changes = [];
   for (const p of products) {
     if (p.quantity < 1) {
@@ -65,6 +69,32 @@ function planChanges(products, users) {
           newValue: 'needs_review',
           reason: reasons.join('; '),
           title: p.title,
+        });
+      }
+    }
+  }
+  if (opts.screening) {
+    const alreadyHeld = new Set(changes.filter((c) => c.field === 'status').map((c) => c.id));
+    for (const p of products) {
+      if (alreadyHeld.has(p.id) || p.moderationStatus !== 'approved') continue;
+      if (p.status !== 'active' && p.status !== 'inactive') continue;
+      const r = screenListing({
+        title: p.title,
+        description: p.description,
+        tags: Array.isArray(p.tags) ? p.tags : [],
+        price: Number(p.price),
+        imageCount: p.imageCount,
+      });
+      if (r.status !== 'approved') {
+        changes.push({
+          table: 'products',
+          id: p.id,
+          field: 'moderation',
+          oldValue: `${p.status}/approved`,
+          newValue: 'needs_review/needs_review',
+          reason: `screening ${r.status}: ${r.reasons.map((x) => x.code).join(', ')}`,
+          title: p.title,
+          reasons: r.reasons,
         });
       }
     }
@@ -101,6 +131,13 @@ async function applyChange(client, c) {
       `UPDATE "products" SET "status" = 'needs_review', "isAvailable" = false
         WHERE "id" = $1 AND "status" = $2 AND "deletedAt" IS NULL`,
       [c.id, c.oldValue],
+    );
+  } else if (c.table === 'products' && c.field === 'moderation') {
+    r = await client.query(
+      `UPDATE "products" SET "status" = 'needs_review', "isAvailable" = false,
+              "moderationStatus" = 'needs_review', "moderationReasons" = $2::jsonb
+        WHERE "id" = $1 AND "moderationStatus" = 'approved' AND "deletedAt" IS NULL`,
+      [c.id, JSON.stringify(c.reasons.map((x) => ({ code: x.code, message: x.message, at: new Date().toISOString() })))],
     );
   } else if (c.table === 'users' && c.field === 'phoneNumber') {
     r = await client.query(
@@ -143,7 +180,11 @@ async function main() {
     await client.query(apply ? 'BEGIN' : 'BEGIN TRANSACTION READ ONLY');
     const { rows: products } = await loadProducts(client);
     const users = await loadUsersWithPhones(client);
-    const { changes, unparseable } = planChanges(products, users);
+    if (args.screening && !(await columnExists(client, 'products', 'moderationStatus'))) {
+      console.error('products.moderationStatus is missing. Run the B4 migration first.');
+      process.exit(2);
+    }
+    const { changes, unparseable } = planChanges(products, users, { screening: !!args.screening });
 
     const dir = outDir(apply ? 'fix' : 'fix-dryrun');
     const printable = changes.map((c) => ({

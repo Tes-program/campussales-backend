@@ -20,8 +20,9 @@ interface ProductBody {
   [key: string]: unknown;
 }
 
+let titleSeq = 0;
 const listing = (o: Record<string, unknown> = {}) => ({
-  title: 'Casio fx-991ES calculator',
+  title: `Casio fx-991ES calculator ${++titleSeq}`,
   description: 'Works perfectly.',
   price: 7500,
   quantity: 1,
@@ -181,8 +182,8 @@ describe('B1 validation and data integrity (e2e)', () => {
   describe('create and edit', () => {
     it('creates a listing and returns the full object', async () => {
       const p = await createListing();
+      expect(p.title).toMatch(/^Casio fx-991ES calculator \d+$/);
       expect(p).toMatchObject({
-        title: 'Casio fx-991ES calculator',
         price: 7500,
         status: 'active',
         isAvailable: true,

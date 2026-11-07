@@ -48,6 +48,13 @@ export class Message {
   @Column({ nullable: true })
   productId?: string;
 
+  /**
+   * Scam signals (account_number, payment_request, external_link). Used only
+   * to protect users: never blocks or edits the message.
+   */
+  @Column({ type: 'jsonb', default: () => "'[]'" })
+  flags: string[];
+
   @CreateDateColumn()
   createdAt: Date;
 

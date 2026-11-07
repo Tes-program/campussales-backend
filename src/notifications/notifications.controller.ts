@@ -8,6 +8,9 @@ import {
   UseGuards,
   ParseUUIDPipe,
   Logger,
+  Post,
+  HttpCode,
+  HttpStatus,
 } from '@nestjs/common';
 import {
   ApiTags,
@@ -60,6 +63,24 @@ export class NotificationsController {
     return await this.notificationsService.getUnreadCount(user.id);
   }
 
+  @Post('read-all')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Mark all notifications as read' })
+  async readAll(@CurrentUser() user: User) {
+    return this.notificationsService.markAllAsRead(user.id);
+  }
+
+  @Post(':id/read')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Mark one notification as read (idempotent)' })
+  async read(
+    @CurrentUser() user: User,
+    @Param('id', ParseUUIDPipe) id: string,
+  ) {
+    return this.notificationsService.markAsRead(id, user.id);
+  }
+
+  /** @deprecated use POST /notifications/read-all */
   @Patch('read-all')
   @ApiOperation({ summary: 'Mark all notifications as read' })
   @ApiResponse({ status: 200, description: 'All notifications marked as read' })

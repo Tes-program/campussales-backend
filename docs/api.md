@@ -75,7 +75,7 @@ So the currently deployed frontend keeps working, error bodies also include:
 ("Bad Request") is now the `error` *object* above. The deployed frontend does
 not read it.
 
-These legacy fields will be removed in the release after B2. See section 10.
+These legacy fields will be removed in the release after B2. See section 11.
 
 ---
 
@@ -333,6 +333,25 @@ build starts serving.
 6. `npm run fix:data` (dry run), review `plan.csv`, then
    `npm run fix:data -- --apply --confirm-host=<host>`.
 
+**B2–B4 additions** (same release train; migrations are guarded and additive):
+
+7. Before deploying B2, set on Railway: `FRONTEND_URL=https://campus-sales.onrender.com`
+   (startup fails without it), `CORS_ORIGIN=https://campus-sales.onrender.com`,
+   `AUTH_LEGACY_TOKENS=true` (until the frontend migrates; remove by
+   2027-01-31), and, because the frontend and API are on different sites,
+   `AUTH_COOKIE_SAMESITE=none` or a shared domain (see docs/security.md).
+8. B3 needs the `pg_trgm` and `fuzzystrmatch` extensions; the migration
+   creates them (both are "trusted" on PostgreSQL 13+). Afterwards
+   `REFRESH MATERIALIZED VIEW search_vocabulary;` runs automatically every
+   10 minutes when listings change.
+9. B4: set `ADMIN_API_KEY` (long random string; without it the admin API is
+   off), `ADMIN_ALERT_EMAIL` and optionally `APPEAL_EMAIL`. Then
+   `npm run fix:data -- --screening` (dry run) and, after review,
+   `--apply --screening --confirm-host=<host>`.
+10. Local development uses TypeORM `synchronize`, which drops indexes it
+    doesn't know about (the search indexes). Prefer running migrations locally
+    too (`NODE_ENV=test`) or switch `synchronize` off.
+
 ---
 
 ## 8. Listings, search and feed (B3)
@@ -528,7 +547,69 @@ something harder to guess." · "Don't use your email or name in your password."
 
 User objects never contain password hashes, token hashes or internal flags.
 
-## 10. Deprecations (remove after one release)
+## 10. Moderation, reports, blocks, chat, notifications, privacy (B4)
+
+Full rules and thresholds: [docs/moderation.md](moderation.md). Notification
+copy rules: [docs/notifications.md](notifications.md).
+
+### Listings
+
+- Create/edit/relist can return **400 `MODERATION_REJECTED`** with the reason
+  in `error.message` and `error.fields.title` (prohibited items, contact
+  details in the title).
+- Held listings come back with `status: "needs_review"`,
+  `moderationStatus: "needs_review"`, `moderationReasons[]` and
+  `moderationNote: "Under review. This usually takes under 24 hours."`. Only
+  the owner sees them. `activate`/`relist` return 409 while held.
+- Suspended sellers get **403 `ACCOUNT_SUSPENDED`** on create/relist.
+
+### Reports and blocks
+
+| Method & path | Body | Success | Errors |
+| --- | --- | --- | --- |
+| `POST /reports` | `targetType` (listing / user / message), `targetId`, `reason` (scam / fake_item / prohibited / spam / harassment / other), `details?` ≤ 1000 | 201 `{ id, status, message, hiddenForYou: true }`. Drop the item from the UI at once | 400 fields · 404 · 409 already reported (24 h) · 429 (20/day) |
+| `POST /blocks` | `{ userId }` | 200 `{ userId, blocked: true }` (idempotent) | 400 self · 404 |
+| `DELETE /blocks/:userId` | – | 204 (idempotent) | |
+| `GET /blocks` | – | `{ items: [{ userId, username, firstName, avatar, blockedAt }] }` | |
+
+Messaging or starting a chat with a blocked user (either direction): **403
+`BLOCKED`**, message "You can't interact with this account."
+
+### Chat
+
+- Conversations: `{ id, type, participants[{ userId, lastReadAt, user }],
+  otherUser, listing: { productId, title, coverImageUrl, priceAtStart },
+  closed, closedAt, closedReason, createdAt, updatedAt }`. No email or phone.
+- `POST /chat/conversations` with `productId` attaches the listing snapshot.
+- Messages: `{ id, conversationId, senderId, sender, content, type
+  (text / image / file / system), status, attachmentUrl, replyTo, product,
+  safetyTip, createdAt }`. Render `system` messages as banners; show a
+  safety tip when `safetyTip` is true.
+- Limits: content trimmed, 1–1000 characters; 30 messages/minute; 10 new
+  conversations/hour (429 with `retryAfterSeconds`). Sockets emit
+  `message:error { code, error, fields?, retryAfterSeconds? }`.
+- `GET /chat/conversations` items add `listing`, `closed`, `closedReason`;
+  the response adds `totalUnread`. All times are ISO 8601 UTC.
+
+### Notifications
+
+`{ id, type, title, body, createdAt, readAt, link: { kind, id } | null }`
+(+ legacy `text`, `isRead`, `metadata`). `GET /notifications?limit&cursor`,
+`POST /notifications/:id/read`, `POST /notifications/read-all`.
+
+### Privacy (needs legal review)
+
+| Method & path | Notes |
+| --- | --- |
+| `GET /me/export` | JSON of your data (3/day) |
+| `DELETE /me/account` | `{ "confirm": "DELETE" }`; 30-day grace, log in to cancel |
+| `POST /me/consents` | `{ termsVersion?, privacyVersion? }` |
+
+### Admin
+
+`/api/admin/*` needs an admin user **and** `X-Admin-Key`. See docs/moderation.md §4.
+
+## 11. Deprecations (remove after one release)
 
 | What | Replace with |
 | --- | --- |
@@ -542,3 +623,7 @@ User objects never contain password hashes, token hashes or internal flags.
 | `refreshToken` in auth bodies, `POST /auth/register` | cookie, `POST /auth/signup` (remove 2027-01-31) |
 | List response `data`, `page`; params `page`, `search`, `categoryId`, `universityId`, `sortBy`, `sortOrder` | `items`, `cursor`, `q`, `category`, `campus`, `sort` |
 | Wishlist `data` | `items` |
+| Notification `text`, `isRead`, `metadata`; `PATCH /notifications/read-all`, `PATCH /notifications/:id/read` | `body`, `readAt`, `link`; `POST` routes |
+| `DELETE /users/me` (instant deactivation) | `DELETE /me/account` |
+| Notification `text`, `isRead`, `metadata`; `PATCH /notifications/read-all`, `PATCH /notifications/:id/read` | `body`, `readAt`, `link`; `POST` routes |
+| `DELETE /users/me` (instant deactivation) | `DELETE /me/account` |

@@ -1,18 +1,12 @@
-import {
-  IsString,
-  IsOptional,
-  IsEnum,
-  IsUUID,
-  MaxLength,
-} from 'class-validator';
+import { IsString, IsOptional, IsIn, IsUUID, MaxLength } from 'class-validator';
 import { Transform } from 'class-transformer';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { MessageType } from '../enums/chat.enums';
 
 export class SendMessageDto {
-  @ApiProperty({ description: 'Message content', maxLength: 5000 })
-  @IsString()
-  @MaxLength(5000)
+  @ApiProperty({ description: 'Message content (trimmed)', maxLength: 1000 })
+  @IsString({ message: 'Type a message.' })
+  @MaxLength(1000, { message: 'Messages can be up to 1000 characters.' })
   content: string;
 
   @ApiPropertyOptional({ enum: MessageType, default: MessageType.TEXT })
@@ -20,7 +14,9 @@ export class SendMessageDto {
   @Transform(({ value }: { value: unknown }) =>
     typeof value === 'string' ? value.toLowerCase() : value,
   )
-  @IsEnum(MessageType)
+  @IsIn([MessageType.TEXT, MessageType.IMAGE, MessageType.FILE], {
+    message: 'Choose text, image or file.',
+  })
   type?: MessageType;
 
   @ApiPropertyOptional({ description: 'URL of attached media (from uploads)' })

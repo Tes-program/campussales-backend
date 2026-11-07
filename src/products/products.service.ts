@@ -16,6 +16,9 @@ import { PublishDraftDto } from './dto/publish-draft.dto';
 import { Wishlist } from '../wishlist/entities/wishlist.entity';
 import { NotificationsService } from '../notifications/notifications.service';
 import { SearchService } from '../search/search.service';
+import { ModerationService } from '../moderation/moderation.service';
+import { UNDER_REVIEW_NOTE } from '../moderation/screening';
+import { closeConversationsForProduct } from '../chat/conversation-closer';
 import {
   categorySlugVariants,
   resolveCategorySlug,
@@ -53,11 +56,26 @@ export class ProductsService {
     private readonly dataSource: DataSource,
     private readonly notificationsService: NotificationsService,
     private readonly search: SearchService,
+    private readonly moderation: ModerationService,
   ) {}
 
   // ─── WRITES ──────────────────────────────────────────────────
 
   async create(sellerId: string, dto: CreateProductDto): Promise<Product> {
+    await this.moderation.assertCanPost(sellerId);
+    const screening = await this.moderation.screen(
+      {
+        title: dto.title,
+        description: dto.description,
+        tags: dto.tags,
+        price: dto.price,
+        imageCount: dto.images?.length ?? 0,
+      },
+      sellerId,
+    );
+    if (screening.status === 'rejected')
+      throw ModerationService.rejection(screening);
+
     const id = await this.dataSource.transaction(async (manager) => {
       const categoryId = await this.resolveCategoryId(dto, manager);
       const [profile] = await manager.query<{ universityId: string | null }[]>(
@@ -77,6 +95,8 @@ export class ProductsService {
         priceHistory: [],
       });
       applyStatus(product, ProductStatus.ACTIVE);
+      product.moderationReasons = [];
+      ModerationService.applyScreening(product, screening);
       const saved = await manager.save(product);
       await this.replaceImages(manager, saved.id, dto.images);
       return saved.id;
@@ -94,17 +114,25 @@ export class ProductsService {
     if (product.status === ProductStatus.SOLD) {
       throw conflict(MSG.productSoldLocked);
     }
-    const priceDrop = await this.dataSource.transaction((manager) =>
-      this.applyEdits(manager, product, dto),
-    );
+    const screening = await this.screenEdits(product, dto);
+    const priceDrop = await this.dataSource.transaction((manager) => {
+      ModerationService.applyScreening(product, screening);
+      return this.applyEdits(manager, product, dto);
+    });
     if (priceDrop) this.firePriceDrop(product.id, product.title, priceDrop);
     return this.loadForResponse(id);
   }
 
   /** Soft delete. Sold items can be deleted too. */
   async remove(id: string, userId: string): Promise<Product> {
-    await this.findOwnedForWrite(id, userId);
+    const product = await this.findOwnedForWrite(id, userId);
     await this.productsRepository.softDelete({ id });
+    await closeConversationsForProduct(
+      this.dataSource,
+      id,
+      product.sellerId,
+      'deleted',
+    );
     return this.loadForResponse(id, { withDeleted: true });
   }
 
@@ -114,6 +142,12 @@ export class ProductsService {
     if (product.status !== ProductStatus.SOLD) {
       applyStatus(product, ProductStatus.SOLD);
       await this.productsRepository.save(product);
+      await closeConversationsForProduct(
+        this.dataSource,
+        id,
+        product.sellerId,
+        'sold',
+      );
     }
     return this.loadForResponse(id);
   }
@@ -139,6 +173,7 @@ export class ProductsService {
     if (product.status === ProductStatus.SOLD) {
       throw conflict(MSG.productSoldActivate);
     }
+    this.assertNotHeld(product);
     await this.assertListable(product);
     applyStatus(product, ProductStatus.ACTIVE);
     await this.productsRepository.save(product);
@@ -166,6 +201,12 @@ export class ProductsService {
     dto?: UpdateProductDto,
   ): Promise<Product> {
     const product = await this.findOwnedForWrite(id, userId);
+    await this.moderation.assertCanPost(userId);
+    this.assertNotHeld(product);
+    const screening = dto ? await this.screenEdits(product, dto) : null;
+    if (screening?.status === 'needs_review') {
+      throw conflict(UNDER_REVIEW_NOTE);
+    }
     const wasActive = product.status === ProductStatus.ACTIVE;
     if (wasActive && !(await this.canBump(id))) {
       throw rateLimited(MSG.relistTooSoon);
@@ -431,6 +472,34 @@ export class ProductsService {
 
   // ─── HELPERS ─────────────────────────────────────────────────
 
+  /** Screens the listing as it will look after the edit. Throws on rejection. */
+  private async screenEdits(product: Product, dto: UpdateProductDto) {
+    const result = await this.moderation.screen(
+      {
+        title: dto.title ?? product.title,
+        description: dto.description ?? product.description,
+        tags: dto.tags ?? product.tags,
+        price: dto.price ?? Number(product.price),
+        imageCount: dto.images?.length ?? product.images?.length ?? 0,
+      },
+      product.sellerId,
+      product.id,
+    );
+    if (result.status === 'rejected') throw ModerationService.rejection(result);
+    return result;
+  }
+
+  /** Listings held by screening, reports or a moderator can't be self-activated. */
+  private assertNotHeld(product: Product) {
+    if (product.moderationStatus === 'needs_review')
+      throw conflict(UNDER_REVIEW_NOTE);
+    if (product.moderationStatus === 'rejected') {
+      throw conflict(
+        'This listing was taken down by our team and can’t be reactivated.',
+      );
+    }
+  }
+
   /** Maps a validated draft DTO onto draft columns (category slug -> id). */
   private async draftColumns(
     dto: CreateDraftDto | UpdateDraftDto,
@@ -472,7 +541,9 @@ export class ProductsService {
       withDeleted: opts.withDeleted ?? false,
     });
     if (!product) throw notFound(MSG.productNotFound);
-    return product;
+    return Object.assign(product, {
+      moderationNote: ModerationService.ownerNote(product),
+    });
   }
 
   /**
