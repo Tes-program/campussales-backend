@@ -4,6 +4,7 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { ThrottlerModule } from '@nestjs/throttler';
 import { BullModule } from '@nestjs/bullmq';
 import { getDatabaseConfig } from './config/database.config';
+import { CountingQueryLogger } from './common/query-count';
 import { AuthModule } from './auth/auth.module';
 import { UsersModule } from './users/user.module';
 import { ProductsModule } from './products/products.module';
@@ -14,6 +15,9 @@ import { UploadsModule } from './uploads/uploads.module';
 import { ChatModule } from './chat/chat.module';
 import { NotificationsModule } from './notifications/notifications.module';
 import { RateLimitModule } from './common/rate-limit/rate-limit.module';
+import { SearchModule } from './search/search.module';
+import { FeedModule } from './feed/feed.module';
+import { ShareModule } from './share/share.module';
 import { EmailModule } from './common/services/email.module';
 
 @Module({
@@ -35,7 +39,11 @@ import { EmailModule } from './common/services/email.module';
           retryAttempts: 3,
           retryDelay: 3000,
           autoLoadEntities: true,
-          logger: 'advanced-console',
+          logger: new CountingQueryLogger(
+            configService.get('NODE_ENV') === 'development'
+              ? ['error', 'warn', 'migration']
+              : ['error'],
+          ),
           logging:
             configService.get('NODE_ENV') === 'development'
               ? ['error', 'warn', 'migration']
@@ -75,6 +83,9 @@ import { EmailModule } from './common/services/email.module';
     UploadsModule,
     ChatModule,
     NotificationsModule,
+    SearchModule,
+    FeedModule,
+    ShareModule,
   ],
 })
 export class AppModule {}

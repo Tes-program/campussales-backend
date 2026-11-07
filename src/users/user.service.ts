@@ -134,6 +134,10 @@ export class UsersService {
     });
   }
 
+  async touchLastActive(id: string): Promise<void> {
+    await this.usersRepository.update({ id }, { lastActiveAt: new Date() });
+  }
+
   async findByIdOrFail(id: string): Promise<User> {
     const user = await this.findById(id);
     if (!user) {

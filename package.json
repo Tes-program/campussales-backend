@@ -26,7 +26,9 @@
     "seed:categories": "ts-node -r tsconfig-paths/register src/database/seeds/seed-categories.ts",
     "seed:schools": "ts-node -r tsconfig-paths/register src/database/seeds/seed-schools.ts",
     "audit:data": "node scripts/audit-data.js",
-    "fix:data": "node scripts/fix-data.js"
+    "fix:data": "node scripts/fix-data.js",
+    "seed:perf": "node scripts/seed-perf.js",
+    "search:misses": "node scripts/search-misses.js"
   },
   "dependencies": {
     "@nestjs/bullmq": "^11.0.4",

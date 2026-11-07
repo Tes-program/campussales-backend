@@ -9,6 +9,8 @@ import { Category } from './entities/category.entity';
 import { ProductDraft } from './entities/product-draft.entity';
 import { NotificationsModule } from '../notifications/notifications.module';
 import { Wishlist } from '../wishlist/entities/wishlist.entity';
+import { SearchModule } from '../search/search.module';
+import { ListingService } from './listing.service';
 
 @Module({
   imports: [
@@ -20,9 +22,10 @@ import { Wishlist } from '../wishlist/entities/wishlist.entity';
       Wishlist,
     ]),
     NotificationsModule,
+    SearchModule,
   ],
   controllers: [ProductsController],
-  providers: [ProductsService],
-  exports: [ProductsService],
+  providers: [ProductsService, ListingService],
+  exports: [ProductsService, ListingService],
 })
 export class ProductsModule {}

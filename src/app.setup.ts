@@ -7,6 +7,7 @@ import { LoggingInterceptor } from './common/interceptors/logging.interceptor';
 import { TimeoutInterceptor } from './common/interceptors/timeout.interceptor';
 import { SanitizeInterceptor } from './common/interceptors/sanitize.interceptor';
 import { requestIdMiddleware } from './common/middleware/request-id.middleware';
+import { queryCountMiddleware } from './common/query-count';
 import { createValidationPipe } from './common/validation/validation-errors';
 
 /**
@@ -18,6 +19,7 @@ export function configureApp(app: INestApplication): void {
 
   // Must be first so every response, including guard/pipe failures, has an id.
   app.use(requestIdMiddleware);
+  app.use(queryCountMiddleware);
 
   app.useGlobalFilters(new HttpExceptionFilter());
   app.useGlobalInterceptors(
@@ -61,9 +63,10 @@ export function configureApp(app: INestApplication): void {
   app.enableCors({
     origin: [...new Set([...configured, ...devOrigins])],
     credentials: true,
-    exposedHeaders: ['X-Request-Id', 'Retry-After'],
+    exposedHeaders: ['X-Request-Id', 'Retry-After', 'ETag'],
   });
 
   app.useGlobalPipes(createValidationPipe());
-  app.setGlobalPrefix('api');
+  // /share/* serves link-preview HTML at the root, outside /api.
+  app.setGlobalPrefix('api', { exclude: ['share', 'share/(.*)'] });
 }

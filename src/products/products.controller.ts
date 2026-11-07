@@ -13,6 +13,7 @@ import {
   Logger,
   HttpCode,
   HttpStatus,
+  Res,
 } from '@nestjs/common';
 import {
   ApiTags,
@@ -24,7 +25,12 @@ import {
 import { ProductsService } from './products.service';
 import { CreateProductDto } from './dto/create-product.dto';
 import { UpdateProductDto } from './dto/update-product.dto';
-import { FilterProductDto } from './dto/filter-product.dto';
+import { ListProductsQueryDto } from './dto/list-products.dto';
+import { ListingService } from './listing.service';
+import { OptionalJwtAuthGuard } from '../auth/guards/optional-jwt-auth.guard';
+import { ValidationFailed } from '../common/errors/app-errors';
+import { createHash } from 'crypto';
+import type { Response } from 'express';
 import { ProductDraft } from './entities/product-draft.entity';
 import { CreateDraftDto } from './dto/create-draft.dto';
 import { UpdateDraftDto } from './dto/update-draft.dto';
@@ -41,7 +47,10 @@ import { Product } from './entities/product.entity';
 export class ProductsController {
   private readonly logger = new Logger(ProductsController.name);
 
-  constructor(private readonly productsService: ProductsService) {}
+  constructor(
+    private readonly productsService: ProductsService,
+    private readonly listing: ListingService,
+  ) {}
 
   @Post()
   @UseGuards(JwtAuthGuard, EmailVerifiedGuard)
@@ -61,11 +70,22 @@ export class ProductsController {
   }
 
   @Get()
-  @ApiOperation({ summary: 'Get all products with filters' })
-  @ApiResponse({ status: 200, description: 'Products retrieved successfully' })
-  async findAll(@Query() filterDto: FilterProductDto) {
-    this.logger.log('Fetching products with filters');
-    return await this.productsService.findAll(filterDto);
+  @UseGuards(OptionalJwtAuthGuard)
+  @ApiOperation({
+    summary:
+      'List and search listings. Public. Cursor pagination; legacy page/search/categoryId params still work.',
+  })
+  @ApiResponse({
+    status: 200,
+    description:
+      '{ items, nextCursor, total, totalCapped, didYouMean, fromOtherCampuses, moreFromNearby, data, page, limit }',
+  })
+  @ApiResponse({ status: 400, description: 'VALIDATION_FAILED with fields' })
+  async findAll(
+    @Query() query: ListProductsQueryDto,
+    @CurrentUser() viewer?: User,
+  ) {
+    return this.listing.list(query, viewer);
   }
 
   @Get('featured')
@@ -268,13 +288,53 @@ export class ProductsController {
   // --- Parameterized :id routes LAST ---
 
   @Get(':id')
-  @ApiOperation({ summary: 'Get product by ID' })
-  @ApiResponse({ status: 200, description: 'Product found' })
-  @ApiResponse({ status: 404, description: 'Product not found' })
-  @ApiResponse({ status: 400, description: 'Invalid product ID format' })
-  async findOne(@Param('id', ParseUUIDPipe) id: string) {
-    this.logger.log(`Fetching product with ID: ${id}`);
-    return await this.productsService.findOne(id);
+  @UseGuards(OptionalJwtAuthGuard)
+  @ApiOperation({
+    summary:
+      'Public item page. Sold/inactive return 200 with status; deleted 404. Adds isOwner/isWishlisted when logged in.',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Product with seller block and ISO dates',
+  })
+  @ApiResponse({ status: 304, description: 'Not modified (If-None-Match)' })
+  @ApiResponse({ status: 404, description: 'NOT_FOUND' })
+  async findOne(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Res({ passthrough: true }) res: Response,
+    @CurrentUser() viewer?: User,
+  ) {
+    const item = await this.listing.item(id, viewer);
+    if (viewer) {
+      res.setHeader('Cache-Control', 'private, no-store');
+    } else {
+      // viewCount changes on every view; leave it out of the validator.
+      const stable: Partial<typeof item> = { ...item };
+      delete stable.viewCount;
+      res.setHeader(
+        'ETag',
+        `W/"${createHash('sha1').update(JSON.stringify(stable)).digest('base64url')}"`,
+      );
+      res.setHeader('Cache-Control', 'public, max-age=60');
+    }
+    return item;
+  }
+
+  @Get(':id/similar')
+  @UseGuards(OptionalJwtAuthGuard)
+  @ApiOperation({
+    summary: 'Similar items: same category, same campus first, 50-200% price.',
+  })
+  async similar(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Query('limit') limitRaw?: string,
+    @CurrentUser() viewer?: User,
+  ) {
+    const limit = limitRaw === undefined ? 8 : Number(limitRaw);
+    if (!Number.isInteger(limit) || limit < 1 || limit > 20) {
+      throw new ValidationFailed({ limit: 'Show between 1 and 20 items.' });
+    }
+    return { items: await this.listing.similar(id, limit, viewer) };
   }
 
   @Patch(':id')

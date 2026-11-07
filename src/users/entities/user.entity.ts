@@ -88,6 +88,10 @@ export class User {
   @Column({ type: 'uuid', nullable: true })
   signupSchoolId?: string | null;
 
+  /** Updated at most every 5 minutes on authenticated requests. */
+  @Column({ type: 'timestamp', nullable: true })
+  lastActiveAt?: Date | null;
+
   /** Computed, exposed on every user object. */
   emailVerified?: boolean;
 

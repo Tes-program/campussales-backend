@@ -23,6 +23,14 @@ describe('sanitize', () => {
     });
   });
 
+  it('keeps an object that appears twice (not a cycle)', () => {
+    const items = [{ id: 1 }];
+    expect(sanitize({ items, data: items })).toEqual({
+      items: [{ id: 1 }],
+      data: [{ id: 1 }],
+    });
+  });
+
   it('survives cycles', () => {
     const a: Record<string, unknown> = { name: 'a' };
     a.self = a;

@@ -75,7 +75,7 @@ So the currently deployed frontend keeps working, error bodies also include:
 ("Bad Request") is now the `error` *object* above. The deployed frontend does
 not read it.
 
-These legacy fields will be removed in the release after B2. See section 8.
+These legacy fields will be removed in the release after B2. See section 10.
 
 ---
 
@@ -335,6 +335,126 @@ build starts serving.
 
 ---
 
+## 8. Listings, search and feed (B3)
+
+Performance proof: [docs/perf-b3.md](perf-b3.md) (worst p95 49 ms on 10,000 products).
+
+### `GET /products` (public; personalised when a token is sent)
+
+| Param | Notes |
+| --- | --- |
+| `q` | Search text, ≤ 100 chars (legacy alias `search`). Typo-tolerant. |
+| `campus` | School id, or `all`. **Never defaulted by the server.** No param = no campus filter (legacy alias `universityId`). |
+| `category` | Slug(s), repeat or comma-separate (`category=gaming,furniture`). Legacy `categoryId` still works. |
+| `condition` | Multi-value (`new`, `like_new`, `used`, `fair` or labels). |
+| `minPrice`, `maxPrice` | Integer naira. `maxPrice` < `minPrice` → `fields.maxPrice`. |
+| `tag` | One tag (lowercase). |
+| `status` | `active` (default) or `sold`. |
+| `sort` | `newest` (default), `price_asc`, `price_desc`, `relevance` (needs `q`). Legacy `sortBy`/`sortOrder` map to these. |
+| `limit` | Default 20, max 50. |
+| `cursor` | Opaque; pass back `nextCursor`. Keyset on (createdAt, id) or (price, id): stable and duplicate-free even when new items arrive. Relevance uses an offset cursor. Legacy `page` still does offset paging. |
+
+Every invalid parameter is a 400 with `fields`.
+
+```json
+{
+  "items": [ /* cards */ ],
+  "nextCursor": "eyJzIjoi…",
+  "total": 1000, "totalCapped": true,
+  "didYouMean": "laptop",
+  "fromOtherCampuses": false,
+  "moreFromNearby": [],
+  "data": [ /* same as items (legacy) */ ], "page": 1, "limit": 20
+}
+```
+
+- `total` is capped at 1000; show "1000+" when `totalCapped` is true.
+- `didYouMean` is set when a word was corrected (e.g. `laptpo` → `laptop`);
+  results already use the correction.
+- When `campus` is set and the first page has fewer than 4 items,
+  `fromOtherCampuses: true` and `moreFromNearby` holds up to 8 items from
+  other campuses (same city first): "Nothing on your campus yet. Here's
+  what's nearby."
+- Logged-in viewers never see items from users they blocked or who blocked them.
+
+**Card shape** (list, wishlist, similar, feed): `id, title, description`
+(**now a ≤ 160-char excerpt**; the full text is on the item endpoint)`,
+excerpt, price, previousPrice, droppedAt, condition, quantity, status,
+isAvailable, isSold, isFeatured, viewCount, tags, sellerId, categoryId,
+campusId, category{id,name,slug}, images[] (cover first), seller{id,
+firstName, avatar, campus{id,name,shortName}, profile{…legacy}},
+createdAt, updatedAt`, plus `isWishlisted` when logged in.
+**Removed:** `seller.email` (never needed in cards; private).
+
+### `GET /products/:id` (public)
+
+Full product: everything in the card plus the full `description`,
+`priceHistory`, `lastBumpedAt`, and ISO 8601 `createdAt`/`updatedAt`.
+`seller` adds `memberSince`, `itemsSold`, `lastActiveAt`, `verifiedStudent`
+(true only for a confirmed email on an `.edu.ng`/`.edu` domain). Email and
+phone appear only for the owner. Logged in: `isOwner`, `isWishlisted`; owner
+only: `wishlistCount` (a number, never who saved it).
+
+- Sold or inactive: 200 with `status` (show "This item is no longer available").
+- Deleted, under review (non-owner) or blocked: 404.
+- Anonymous: `Cache-Control: public, max-age=60` and `ETag` (304 on `If-None-Match`).
+  Logged in: `private, no-store`.
+
+### `GET /products/:id/similar?limit=8`
+
+Same category, same campus first, price 50–200% of the item, excluding the
+item, the viewer's own items and blocked users. `{ items: [cards] }`, limit ≤ 20.
+
+### Search
+
+- Matches title (weight A), tags (B), description (D) with PostgreSQL full
+  text search (English stemming: plurals, case) plus trigram similarity on
+  titles, plus category names. Typo correction uses a vocabulary of live
+  title/tag words (edit distance ≤ 2 or trigram match).
+- Synonyms and protected words: `data/search-synonyms.json` ("fone" → phone;
+  "tokunbo", "fan", "ac" are never dropped or corrected).
+- `GET /search/suggest?q=` → `{ suggestions: [{ type: "category"|"title", text, slug? }] }`,
+  up to 8, cached 60 s per query.
+- Zero-result queries are stored in `search_misses` (text only, no user).
+  `npm run search:misses` prints the weekly top 50.
+
+### `GET /feed` (auth)
+
+`{ items: [cards], nextCursor }`. Ranked by `src/feed/feed-score.ts`:
+recency (14-day decay), same campus +0.6, interest category +0.4, price drop
+in the last 7 days +0.3, seller active in the last 3 days +0.2, older than
+60 days −0.5. Never the viewer's own or blocked users' items; at most 3 in a
+row from one seller. Logged-out users use `GET /products` (newest).
+
+### `GET /me/interests`, `PATCH /me/interests`
+
+`{ interests: ["electronics", "books-textbooks"] }` (0–8 category slugs;
+aliases accepted). Onboarding already saves interests to the same place.
+
+### Wishlist (B3 changes)
+
+- `GET /wishlist` → `items`: cards plus `available`, `status` (`active`,
+  `sold`, `inactive`, `deleted`), `unavailableMessage`, `wishlistedAt`. Legacy
+  `data` is unchanged.
+- `POST /wishlist/:productId` → 200 `{ isInWishlist: true, added }`, idempotent.
+- `DELETE /wishlist/:productId` → 204, idempotent (no 404 when not saved).
+
+### Share previews
+
+`GET /share/item/:id` (at the API root, not under `/api`) returns minimal HTML
+with Open Graph and Twitter tags (title with ₦ price, excerpt, cover image)
+and redirects people to `{FRONTEND_URL}/item/:id`. `GET /share` does the same
+for the landing page.
+
+Routing: Render static sites can't route by User-Agent, so **use the share
+URL itself as the link people copy** (the "Share" button should copy
+`https://<api-host>/share/item/<id>`). Bots read the tags; people land on the
+item page. If you later put a CDN in front of the site (for example Cloudflare),
+you can instead route known bot user agents on `/item/*` to
+`/share/item/*`.
+
+---
+
 ## 9. Auth (B2)
 
 Full design and deployment notes: [docs/security.md](security.md).
@@ -408,7 +528,7 @@ something harder to guess." · "Don't use your email or name in your password."
 
 User objects never contain password hashes, token hashes or internal flags.
 
-## 8. Deprecations (remove after one release)
+## 10. Deprecations (remove after one release)
 
 | What | Replace with |
 | --- | --- |
@@ -420,3 +540,5 @@ User objects never contain password hashes, token hashes or internal flags.
 | `PATCH /users/me` `phoneNumber` | `phone` |
 | Level alias `Graduate`; interest aliases from the old onboarding picker | canonical values |
 | `refreshToken` in auth bodies, `POST /auth/register` | cookie, `POST /auth/signup` (remove 2027-01-31) |
+| List response `data`, `page`; params `page`, `search`, `categoryId`, `universityId`, `sortBy`, `sortOrder` | `items`, `cursor`, `q`, `category`, `campus`, `sort` |
+| Wishlist `data` | `items` |

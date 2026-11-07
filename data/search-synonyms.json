@@ -1,0 +1,37 @@
+{
+  "_comment": "Search synonyms. 'map': a typed word -> what to search for (one or more words; alternatives are OR-ed). 'keep': words that are never typo-corrected or dropped, even if short or unusual. Edit freely; no restart of the database needed, only of the API.",
+  "map": {
+    "fone": ["phone"],
+    "fones": ["phone"],
+    "handset": ["phone"],
+    "mobile": ["phone"],
+    "cellphone": ["phone"],
+    "lappy": ["laptop"],
+    "lapi": ["laptop"],
+    "notebook": ["laptop", "notebook"],
+    "pc": ["computer", "laptop", "pc"],
+    "ac": ["ac", "air conditioner"],
+    "aircon": ["air conditioner", "ac"],
+    "tv": ["tv", "television"],
+    "telly": ["television", "tv"],
+    "bike": ["bicycle", "bike"],
+    "cycle": ["bicycle"],
+    "specs": ["glasses"],
+    "sneakers": ["sneakers", "shoes"],
+    "canvas": ["canvas", "sneakers"],
+    "sound": ["speaker", "sound"],
+    "earpiece": ["earphones", "earbuds"],
+    "airpod": ["airpods"],
+    "ps": ["playstation", "ps"],
+    "gen": ["generator"],
+    "inverter": ["inverter", "power"],
+    "matress": ["mattress"],
+    "textbook": ["textbook", "book"]
+  },
+  "keep": [
+    "tokunbo", "ac", "fan", "tv", "pc", "ps4", "ps5", "xbox", "iphone", "ipad",
+    "hp", "dell", "lg", "jbl", "oraimo", "itel", "tecno", "infinix", "gen",
+    "ankara", "aso", "oke", "agbada", "jollof", "garri", "naira", "jamb", "waec",
+    "neco", "utme", "post-utme", "100l", "200l", "300l", "400l", "500l"
+  ]
+}

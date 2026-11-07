@@ -11,6 +11,9 @@ import { Wishlist } from './entities/wishlist.entity';
 import { Product } from '../products/entities/product.entity';
 import { AddToWishlistDto } from './dto/add-to-wishlist.dto';
 import { NotificationsService } from '../notifications/notifications.service';
+import { ListingService } from '../products/listing.service';
+import { ProductStatus } from '../common/constants/listing';
+import { User } from '../users/entities/user.entity';
 
 @Injectable()
 export class WishlistService {
@@ -22,6 +25,7 @@ export class WishlistService {
     @InjectRepository(Product)
     private productRepository: Repository<Product>,
     private readonly notificationsService: NotificationsService,
+    private readonly listing: ListingService,
   ) {}
 
   /**
@@ -120,61 +124,114 @@ export class WishlistService {
   }
 
   /**
-   * Get user's wishlist with pagination.
+   * Get user's wishlist.
    *
-   * Items whose product was sold, hidden or deleted stay in the list with
-   * `isUnavailable: true` and `unavailableMessage`, so the UI can show
-   * "No longer available" instead of a broken card. Deleted products are
-   * loaded with withDeleted so the card still has a title and photo.
+   * `items` uses the same card shape as GET /products plus `available`,
+   * `status` and `wishlistedAt`; sold, hidden and deleted items stay in the
+   * list (available: false) so the UI can mark them. `data` is the legacy
+   * shape (wishlist rows) with `isUnavailable` / `unavailableMessage`.
    */
-  async getUserWishlist(
-    userId: string,
-    page: number = 1,
-    limit: number = 10,
-  ): Promise<{
-    data: Array<
-      Wishlist & { isUnavailable: boolean; unavailableMessage: string | null }
-    >;
-    total: number;
-    page: number;
-    limit: number;
-    totalPages: number;
-  }> {
+  async getUserWishlist(userId: string, page: number = 1, limit: number = 10) {
     const validPage = page < 1 ? 1 : Number(page);
     const validLimit = limit < 1 || limit > 100 ? 10 : Number(limit);
 
-    const [wishlistItems, total] = await this.wishlistRepository.findAndCount({
+    const [rows, total] = await this.wishlistRepository.findAndCount({
       where: { userId },
-      relations: [
-        'product',
-        'product.images',
-        'product.seller',
-        'product.seller.profile',
-        'product.category',
-      ],
+      relations: ['product'],
       withDeleted: true,
       skip: (validPage - 1) * validLimit,
       take: validLimit,
       order: { createdAt: 'DESC' },
     });
 
-    const data = wishlistItems.map((item) => {
-      const p = item.product;
+    const cards = await this.listing.loadCards(
+      rows.map((r) => r.productId),
+      { id: userId } as User,
+      { withDeleted: true },
+    );
+
+    const items = rows
+      .map((r) => {
+        const card = cards.get(r.productId);
+        if (!card) return null;
+        const deleted = !!r.product?.deletedAt;
+        const available = !deleted && card.status === ProductStatus.ACTIVE;
+        return {
+          ...card,
+          status: deleted ? 'deleted' : card.status,
+          available,
+          unavailableMessage: available ? null : 'No longer available',
+          isWishlisted: true,
+          wishlistedAt: r.createdAt,
+        };
+      })
+      .filter((x): x is NonNullable<typeof x> => !!x);
+
+    const data = rows.map((r) => {
+      const card = cards.get(r.productId);
       const isUnavailable =
-        !p || !!p.deletedAt || p.isAvailable === false || p.isSold === true;
-      return Object.assign(item, {
+        !card || !!r.product?.deletedAt || card.status !== ProductStatus.ACTIVE;
+      return {
+        id: r.id,
+        userId: r.userId,
+        productId: r.productId,
+        createdAt: r.createdAt,
+        product: card ?? null,
         isUnavailable,
         unavailableMessage: isUnavailable ? 'No longer available' : null,
-      });
+      };
     });
 
     return {
+      items,
       data,
       total,
       page: validPage,
       limit: validLimit,
       totalPages: Math.ceil(total / validLimit),
     };
+  }
+
+  /** Idempotent add: 200 whether or not it was already saved. */
+  async save(
+    userId: string,
+    productId: string,
+  ): Promise<{ isInWishlist: true; added: boolean }> {
+    const exists = await this.wishlistRepository.findOne({
+      where: { userId, productId },
+    });
+    if (exists) return { isInWishlist: true, added: false };
+    const product = await this.productRepository.findOne({
+      where: { id: productId },
+    });
+    if (!product || product.status === ProductStatus.NEEDS_REVIEW) {
+      throw new NotFoundException('This item is no longer available.');
+    }
+    if (product.sellerId === userId) {
+      throw new BadRequestException('You cannot save your own item.');
+    }
+    await this.wishlistRepository
+      .createQueryBuilder()
+      .insert()
+      .values({ userId, productId })
+      .orIgnore()
+      .execute();
+    this.notificationsService
+      .notifyWishlistAdded(
+        product.sellerId,
+        'A buyer',
+        product.title,
+        productId,
+      )
+      .catch((err) =>
+        this.logger.error('Failed to send wishlist notification', err.stack),
+      );
+    return { isInWishlist: true, added: true };
+  }
+
+  /** Idempotent remove: succeeds even if it was not saved. */
+  async unsave(userId: string, productId: string): Promise<void> {
+    await this.wishlistRepository.delete({ userId, productId });
   }
 
   /**

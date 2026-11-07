@@ -132,18 +132,26 @@ export class WishlistController {
     await this.wishlistService.clearWishlist(user.id);
   }
 
+  @Post(':productId')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Save an item (idempotent).' })
+  @ApiResponse({ status: 200, description: '{ isInWishlist: true, added }' })
+  @ApiResponse({ status: 404, description: 'Item not found or deleted' })
+  async save(
+    @CurrentUser() user: User,
+    @Param('productId', ParseUUIDPipe) productId: string,
+  ) {
+    return this.wishlistService.save(user.id, productId);
+  }
+
   @Delete(':productId')
   @HttpCode(HttpStatus.NO_CONTENT)
-  @ApiOperation({ summary: 'Remove product from wishlist' })
-  @ApiResponse({ status: 204, description: 'Product removed from wishlist' })
-  @ApiResponse({ status: 404, description: 'Product not found in wishlist' })
+  @ApiOperation({ summary: 'Remove an item (idempotent).' })
+  @ApiResponse({ status: 204, description: 'Removed (or was not saved)' })
   async removeFromWishlist(
     @CurrentUser() user: User,
     @Param('productId', ParseUUIDPipe) productId: string,
   ) {
-    this.logger.log(
-      `User ${user.id} removing product ${productId} from wishlist`,
-    );
-    await this.wishlistService.removeFromWishlist(user.id, productId);
+    await this.wishlistService.unsave(user.id, productId);
   }
 }

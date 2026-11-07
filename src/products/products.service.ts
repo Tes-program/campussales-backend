@@ -9,13 +9,13 @@ import { ProductImage } from './entities/product-image.entity';
 import { Category } from './entities/category.entity';
 import { CreateProductDto } from './dto/create-product.dto';
 import { UpdateProductDto } from './dto/update-product.dto';
-import { FilterProductDto } from './dto/filter-product.dto';
 import { ProductDraft } from './entities/product-draft.entity';
 import { CreateDraftDto } from './dto/create-draft.dto';
 import { UpdateDraftDto } from './dto/update-draft.dto';
 import { PublishDraftDto } from './dto/publish-draft.dto';
 import { Wishlist } from '../wishlist/entities/wishlist.entity';
 import { NotificationsService } from '../notifications/notifications.service';
+import { SearchService } from '../search/search.service';
 import {
   categorySlugVariants,
   resolveCategorySlug,
@@ -52,6 +52,7 @@ export class ProductsService {
     @InjectDataSource()
     private readonly dataSource: DataSource,
     private readonly notificationsService: NotificationsService,
+    private readonly search: SearchService,
   ) {}
 
   // ─── WRITES ──────────────────────────────────────────────────
@@ -59,8 +60,13 @@ export class ProductsService {
   async create(sellerId: string, dto: CreateProductDto): Promise<Product> {
     const id = await this.dataSource.transaction(async (manager) => {
       const categoryId = await this.resolveCategoryId(dto, manager);
+      const [profile] = await manager.query<{ universityId: string | null }[]>(
+        `SELECT "universityId" FROM "user_profiles" WHERE "userId" = $1`,
+        [sellerId],
+      );
       const product = manager.create(Product, {
         sellerId,
+        campusId: profile?.universityId ?? null,
         title: dto.title,
         description: dto.description ?? '',
         price: dto.price,
@@ -75,6 +81,7 @@ export class ProductsService {
       await this.replaceImages(manager, saved.id, dto.images);
       return saved.id;
     });
+    this.search.markDirty();
     return this.loadForResponse(id);
   }
 
@@ -184,89 +191,6 @@ export class ProductsService {
   }
 
   // ─── READS ───────────────────────────────────────────────────
-
-  async findAll(
-    filterDto: FilterProductDto,
-  ): Promise<{ data: Product[]; total: number; page: number; limit: number }> {
-    const {
-      page = 1,
-      limit = 10,
-      categoryId,
-      sellerId,
-      condition,
-      minPrice,
-      maxPrice,
-      search,
-      sortBy = 'createdAt',
-      sortOrder = 'DESC',
-      universityId,
-    } = filterDto;
-
-    const validPage = page < 1 ? 1 : page;
-    const validLimit = limit < 1 || limit > 100 ? 10 : limit;
-
-    // Soft-deleted rows are excluded automatically (DeleteDateColumn);
-    // needs_review/inactive/sold have isAvailable = false.
-    const queryBuilder = this.productsRepository
-      .createQueryBuilder('product')
-      .leftJoinAndSelect('product.seller', 'seller')
-      .leftJoinAndSelect('seller.profile', 'profile')
-      .leftJoinAndSelect('profile.university', 'university')
-      .leftJoinAndSelect('product.category', 'category')
-      .leftJoinAndSelect('product.images', 'images')
-      .where('product.isAvailable = :isAvailable', { isAvailable: true });
-
-    if (categoryId) {
-      queryBuilder.andWhere('product.categoryId = :categoryId', { categoryId });
-    }
-    if (sellerId) {
-      queryBuilder.andWhere('product.sellerId = :sellerId', { sellerId });
-    }
-    if (condition) {
-      queryBuilder.andWhere('product.condition = :condition', { condition });
-    }
-    if (minPrice !== undefined && maxPrice !== undefined) {
-      queryBuilder.andWhere('product.price BETWEEN :minPrice AND :maxPrice', {
-        minPrice,
-        maxPrice,
-      });
-    } else if (minPrice !== undefined) {
-      queryBuilder.andWhere('product.price >= :minPrice', { minPrice });
-    } else if (maxPrice !== undefined) {
-      queryBuilder.andWhere('product.price <= :maxPrice', { maxPrice });
-    }
-    if (universityId) {
-      queryBuilder.andWhere('university.id = :universityId', { universityId });
-    }
-    if (search) {
-      queryBuilder.andWhere(
-        '(product.title ILIKE :search OR product.description ILIKE :search)',
-        { search: `%${search}%` },
-      );
-    }
-
-    queryBuilder.orderBy(`product.${sortBy}`, sortOrder);
-    queryBuilder.skip((validPage - 1) * validLimit).take(validLimit);
-
-    const [products, total] = await queryBuilder.getManyAndCount();
-    return { data: products, total, page: validPage, limit: validLimit };
-  }
-
-  async findOne(id: string): Promise<Product> {
-    const product = await this.productsRepository.findOne({
-      where: { id },
-      relations: [
-        'seller',
-        'seller.profile',
-        'seller.profile.university',
-        'category',
-        'images',
-      ],
-    });
-    if (!product) throw notFound(MSG.productNotFound);
-    await this.productsRepository.increment({ id }, 'viewCount', 1);
-    return product;
-  }
 
   async findBySeller(
     sellerId: string,

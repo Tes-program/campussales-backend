@@ -38,6 +38,10 @@ export class Product {
   @Column({ nullable: true })
   categoryId?: string;
 
+  /** Seller's school when the item was listed (drives campus filters). */
+  @Column({ type: 'uuid', nullable: true })
+  campusId?: string | null;
+
   @Column()
   title: string;
 

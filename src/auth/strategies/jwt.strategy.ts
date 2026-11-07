@@ -39,6 +39,13 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
     ) {
       throw sessionEnded();
     }
+    this.touchLastActive(user.id, user.lastActiveAt);
     return user;
+  }
+
+  /** Records activity at most every 5 minutes (fire and forget). */
+  private touchLastActive(userId: string, last?: Date | null) {
+    if (last && Date.now() - last.getTime() < 5 * 60_000) return;
+    this.usersService.touchLastActive(userId).catch(() => undefined);
   }
 }

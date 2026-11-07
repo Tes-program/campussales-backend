@@ -18,19 +18,25 @@ const SENSITIVE_KEY =
 
 export function sanitize(
   value: unknown,
-  seen = new WeakSet<object>(),
+  ancestors = new WeakSet<object>(),
 ): unknown {
   if (value === null || typeof value !== 'object') return value;
   if (value instanceof Date || Buffer.isBuffer(value)) return value;
-  if (seen.has(value)) return undefined; // break cycles
-  seen.add(value);
-  if (Array.isArray(value)) return value.map((v) => sanitize(v, seen));
-  const out: Record<string, unknown> = {};
-  for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-    if (SENSITIVE_KEY.test(k)) continue;
-    out[k] = sanitize(v, seen);
+  // Only a true cycle (an object inside itself) is cut. The same object used
+  // twice in one response (e.g. `items` and legacy `data`) is kept both times.
+  if (ancestors.has(value)) return undefined;
+  ancestors.add(value);
+  try {
+    if (Array.isArray(value)) return value.map((v) => sanitize(v, ancestors));
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      if (SENSITIVE_KEY.test(k)) continue;
+      out[k] = sanitize(v, ancestors);
+    }
+    return out;
+  } finally {
+    ancestors.delete(value);
   }
-  return out;
 }
 
 @Injectable()
