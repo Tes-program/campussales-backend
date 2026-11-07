@@ -7,6 +7,7 @@ import {
   UpdateDateColumn,
   OneToOne,
   OneToMany,
+  AfterLoad,
 } from 'typeorm';
 import { Exclude } from 'class-transformer';
 import { UserProfile } from './user-profile.entity';
@@ -52,6 +53,48 @@ export class User {
 
   @Column({ default: false })
   isVerified: boolean;
+
+  /** Name given at sign-up (onboarding later fills profile first/last name). */
+  @Column({ type: 'varchar', length: 80, nullable: true })
+  fullName?: string | null;
+
+  @Column({ type: 'timestamp', nullable: true })
+  emailVerifiedAt?: Date | null;
+
+  /**
+   * Unverified accounts may use the app until this time (sign-up + 24h).
+   * null = no deadline (accounts created before B2).
+   */
+  @Column({ type: 'timestamp', nullable: true })
+  verifyBy?: Date | null;
+
+  @Column({ type: 'varchar', length: 32, nullable: true })
+  acceptedTermsVersion?: string | null;
+
+  @Column({ type: 'timestamp', nullable: true })
+  acceptedTermsAt?: Date | null;
+
+  @Column({ type: 'timestamp', nullable: true })
+  passwordChangedAt?: Date | null;
+
+  /**
+   * Access tokens issued before this instant are rejected (set on password
+   * change and "sign out of all devices"). Internal; never returned.
+   */
+  @Column({ type: 'timestamp', nullable: true })
+  tokensValidAfter?: Date | null;
+
+  /** School picked at sign-up (optional until onboarding). */
+  @Column({ type: 'uuid', nullable: true })
+  signupSchoolId?: string | null;
+
+  /** Computed, exposed on every user object. */
+  emailVerified?: boolean;
+
+  @AfterLoad()
+  computeFlags() {
+    this.emailVerified = !!this.emailVerifiedAt;
+  }
 
   @CreateDateColumn()
   createdAt: Date;

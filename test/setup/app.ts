@@ -7,12 +7,23 @@ import { AppModule } from '../../src/app.module';
 import { configureApp } from '../../src/app.setup';
 import { User } from '../../src/users/entities/user.entity';
 import { assertSafeTestDatabase } from './env';
+import {
+  EmailService,
+  OutgoingEmail,
+} from '../../src/common/services/email.service';
 
 export async function createTestApp() {
   assertSafeTestDatabase();
   const moduleRef = await Test.createTestingModule({
     imports: [AppModule],
   }).compile();
+  // Capture emails instead of sending them.
+  const outbox: OutgoingEmail[] = [];
+  const emailService = moduleRef.get(EmailService);
+  emailService.send = (email: OutgoingEmail) => {
+    outbox.push(email);
+    return Promise.resolve(true);
+  };
   const app: INestApplication = moduleRef.createNestApplication({
     logger: ['error'],
   });
@@ -35,5 +46,22 @@ export async function createTestApp() {
     return { user, auth: { Authorization: `Bearer ${token}` } };
   }
 
-  return { app, ds, createUser };
+  /** Waits for a background email (forgot-password sends asynchronously). */
+  async function nextEmail(
+    to: string,
+    kind: OutgoingEmail['kind'],
+    timeoutMs = 3000,
+  ): Promise<OutgoingEmail> {
+    const start = Date.now();
+    while (Date.now() - start < timeoutMs) {
+      const found = [...outbox]
+        .reverse()
+        .find((e) => e.to === to && e.kind === kind);
+      if (found) return found;
+      await new Promise((r) => setTimeout(r, 25));
+    }
+    throw new Error(`No ${kind} email to ${to}`);
+  }
+
+  return { app, ds, createUser, outbox, nextEmail };
 }

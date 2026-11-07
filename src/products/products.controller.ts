@@ -31,6 +31,7 @@ import { UpdateDraftDto } from './dto/update-draft.dto';
 import { PublishDraftDto } from './dto/publish-draft.dto';
 import { AutoSaveDraftDto } from './dto/auto-save-draft.dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { EmailVerifiedGuard } from '../auth/guards/email-verified.guard';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { User } from '../users/entities/user.entity';
 import { Product } from './entities/product.entity';
@@ -43,7 +44,7 @@ export class ProductsController {
   constructor(private readonly productsService: ProductsService) {}
 
   @Post()
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, EmailVerifiedGuard)
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Create a new product' })
   @ApiResponse({ status: 201, description: 'Product created successfully' })
@@ -240,7 +241,7 @@ export class ProductsController {
   }
 
   @Post('drafts/:id/publish')
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, EmailVerifiedGuard)
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Publish draft as product' })
   @ApiResponse({ status: 201, description: 'Draft published successfully' })
@@ -302,7 +303,7 @@ export class ProductsController {
 
   @Post(':id/relist')
   @HttpCode(HttpStatus.OK)
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, EmailVerifiedGuard)
   @ApiBearerAuth()
   @ApiOperation({
     summary:

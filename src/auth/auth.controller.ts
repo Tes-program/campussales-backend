@@ -1,139 +1,302 @@
 import {
-  Controller,
-  Post,
   Body,
+  Controller,
+  Get,
   HttpCode,
   HttpStatus,
-  UseGuards,
   Logger,
-  Get,
+  Post,
+  Req,
+  Res,
+  UseGuards,
 } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import {
-  ApiTags,
+  ApiBearerAuth,
+  ApiBody,
+  ApiCookieAuth,
   ApiOperation,
   ApiResponse,
-  ApiBearerAuth,
+  ApiTags,
 } from '@nestjs/swagger';
-import { AuthService } from './auth.service';
-import { RegisterDto } from './dto/register.dto';
-import { LoginDto } from './dto/login.dto';
-import { JwtAuthGuard } from './guards/jwt-auth.guard';
-import { CurrentUser } from './decorators/current-user.decorator';
+import type { Request, Response } from 'express';
+import { runSchema } from '../common/validation/run-schema';
+import { ValidationFailed } from '../common/errors/app-errors';
 import { User } from '../users/entities/user.entity';
-import { RefreshTokenDto } from './dto/refresh-token.dto';
+import { toPublicUser } from '../users/user.service';
+import {
+  AUTH,
+  legacyTokensEnabled,
+  readCookie,
+  refreshCookieOptions,
+} from './auth.config';
+import { AuthService, IssuedSession, SessionContext } from './auth.service';
+import { CurrentUser } from './decorators/current-user.decorator';
 import { ChangePasswordDto } from './dto/change-password.dto';
 import { ForgotPasswordDto } from './dto/forgot-password.dto';
+import { LoginDto } from './dto/login.dto';
+import { RefreshTokenDto } from './dto/refresh-token.dto';
 import { ResetPasswordDto } from './dto/reset-password.dto';
+import { LegacyRegisterDto, SignupDto } from './dto/signup.dto';
+import { VerifyEmailDto } from './dto/verify-email.dto';
+import { JwtAuthGuard } from './guards/jwt-auth.guard';
+
+const ctxOf = (req: Request): SessionContext => ({
+  ip: req.ip,
+  userAgent: req.get('user-agent') ?? undefined,
+});
 
 @ApiTags('Authentication')
 @Controller('auth')
 export class AuthController {
   private readonly logger = new Logger(AuthController.name);
 
-  constructor(private readonly authService: AuthService) {}
+  constructor(
+    private readonly authService: AuthService,
+    private readonly config: ConfigService,
+  ) {}
 
+  @Post('signup')
+  @ApiOperation({ summary: 'Create an account. Sets the refresh cookie.' })
+  @ApiResponse({ status: 201, description: '{ accessToken, expiresIn, user }' })
+  @ApiResponse({
+    status: 400,
+    description: 'VALIDATION_FAILED (e.g. fields.acceptedTerms)',
+  })
+  @ApiResponse({
+    status: 409,
+    description: 'CONFLICT - email already registered',
+  })
+  @ApiResponse({ status: 429, description: 'RATE_LIMITED' })
+  async signup(
+    @Body() dto: SignupDto,
+    @Req() req: Request,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    return this.sessionResponse(
+      res,
+      await this.authService.signup(dto, ctxOf(req)),
+    );
+  }
+
+  /**
+   * @deprecated Used by the deployed frontend. While AUTH_LEGACY_TOKENS=true
+   * it accepts the old body ({ email, password, username }) without terms;
+   * otherwise it behaves exactly like /auth/signup.
+   */
   @Post('register')
-  @ApiOperation({ summary: 'Register a new user' })
-  @ApiResponse({ status: 201, description: 'User registered successfully' })
-  @ApiResponse({ status: 409, description: 'Email or username already exists' })
-  @ApiResponse({ status: 400, description: 'Invalid input data' })
-  async register(@Body() registerDto: RegisterDto) {
-    this.logger.log(`Registration attempt for email: ${registerDto.email}`);
-    return await this.authService.register(registerDto);
+  @ApiOperation({
+    summary: 'Deprecated alias of /auth/signup',
+    deprecated: true,
+  })
+  @ApiBody({ type: LegacyRegisterDto })
+  async register(
+    @Body() body: Record<string, unknown>,
+    @Req() req: Request,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    const { value, fields, ok } = legacyTokensEnabled(this.config)
+      ? await runSchema<SignupDto | LegacyRegisterDto>(
+          LegacyRegisterDto,
+          body ?? {},
+        )
+      : await runSchema<SignupDto | LegacyRegisterDto>(SignupDto, body ?? {});
+    if (!ok) throw new ValidationFailed(fields);
+    return this.sessionResponse(
+      res,
+      await this.authService.signup(value, ctxOf(req)),
+    );
   }
 
   @Post('login')
   @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: 'User login' })
-  @ApiResponse({ status: 200, description: 'Login successful' })
-  @ApiResponse({ status: 401, description: 'Invalid credentials' })
-  @ApiResponse({ status: 400, description: 'Missing required fields' })
-  async login(@Body() loginDto: LoginDto) {
-    this.logger.log(`Login attempt for email: ${loginDto.email}`);
-    return await this.authService.login(loginDto);
+  @ApiOperation({ summary: 'Log in. Sets the refresh cookie.' })
+  @ApiResponse({ status: 200, description: '{ accessToken, expiresIn, user }' })
+  @ApiResponse({ status: 401, description: 'INVALID_CREDENTIALS' })
+  @ApiResponse({
+    status: 429,
+    description: 'RATE_LIMITED with retryAfterSeconds',
+  })
+  async login(
+    @Body() dto: LoginDto,
+    @Req() req: Request,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    return this.sessionResponse(
+      res,
+      await this.authService.login(dto, ctxOf(req)),
+    );
   }
 
   @Post('refresh')
   @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: 'Refresh access token' })
-  @ApiResponse({ status: 200, description: 'Token refreshed successfully' })
-  @ApiResponse({ status: 401, description: 'Invalid or expired refresh token' })
-  async refresh(@Body() refreshTokenDto: RefreshTokenDto) {
-    this.logger.log('Token refresh attempt');
-    return await this.authService.refresh(refreshTokenDto.refreshToken);
+  @ApiCookieAuth(AUTH.cookieName)
+  @ApiOperation({
+    summary: 'Rotate the refresh cookie and get a new access token.',
+  })
+  @ApiResponse({ status: 200, description: '{ accessToken, expiresIn, user }' })
+  @ApiResponse({
+    status: 401,
+    description: 'UNAUTHENTICATED - missing, expired, revoked or reused',
+  })
+  async refresh(
+    @Body() dto: RefreshTokenDto,
+    @Req() req: Request,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    try {
+      const session = await this.authService.refresh(
+        this.presentedToken(req, dto),
+        ctxOf(req),
+      );
+      return this.sessionResponse(res, session);
+    } catch (e) {
+      res.clearCookie(AUTH.cookieName, this.clearOptions());
+      throw e;
+    }
   }
 
   @Post('logout')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @ApiCookieAuth(AUTH.cookieName)
+  @ApiOperation({
+    summary:
+      'Revoke this session (token family) and clear the cookie. Works with an expired access token.',
+  })
+  @ApiResponse({ status: 204 })
+  async logout(
+    @Body() dto: RefreshTokenDto,
+    @Req() req: Request,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    await this.authService.logout(this.presentedToken(req, dto));
+    res.clearCookie(AUTH.cookieName, this.clearOptions());
+  }
+
+  @Post('logout-all')
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
   @HttpCode(HttpStatus.NO_CONTENT)
-  @ApiOperation({ summary: 'User logout' })
-  @ApiResponse({ status: 204, description: 'Logout successful' })
-  @ApiResponse({ status: 401, description: 'Unauthorized' })
-  async logout(
+  @ApiOperation({ summary: 'Sign out of all devices.' })
+  @ApiResponse({ status: 204 })
+  async logoutAll(
     @CurrentUser() user: User,
-    @Body() refreshTokenDto: RefreshTokenDto,
+    @Res({ passthrough: true }) res: Response,
   ) {
-    this.logger.log(`Logout attempt for user: ${user.id}`);
-    await this.authService.logout(user.id, refreshTokenDto.refreshToken);
+    await this.authService.logoutAll(user.id);
+    res.clearCookie(AUTH.cookieName, this.clearOptions());
   }
 
   @Post('change-password')
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: 'Change password (requires authentication)' })
-  @ApiResponse({ status: 200, description: 'Password changed successfully' })
-  @ApiResponse({
-    status: 401,
-    description: 'Invalid current password or unauthorized',
+  @ApiOperation({
+    summary:
+      'Change password. Signs out other devices, emails the user, returns a fresh access token.',
   })
-  @ApiResponse({ status: 400, description: 'Invalid input or same password' })
+  @ApiResponse({
+    status: 200,
+    description: '{ message, accessToken, expiresIn }',
+  })
+  @ApiResponse({
+    status: 400,
+    description: 'fields.currentPassword or fields.newPassword',
+  })
   async changePassword(
     @CurrentUser() user: User,
-    @Body() changePasswordDto: ChangePasswordDto,
+    @Body() dto: ChangePasswordDto,
+    @Req() req: Request,
   ) {
-    this.logger.log(`Password change attempt for user: ${user.id}`);
-    return await this.authService.changePassword(user.id, changePasswordDto);
+    return this.authService.changePassword(
+      user,
+      dto,
+      this.presentedToken(req, {}),
+    );
   }
 
   @Post('forgot-password')
   @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: 'Request password reset' })
-  @ApiResponse({
-    status: 200,
-    description: 'Password reset process initiated',
+  @ApiOperation({
+    summary: 'Always 200: "If that email has an account, we\'ve sent a link."',
   })
-  @ApiResponse({ status: 400, description: 'Invalid email format' })
-  async forgotPassword(@Body() forgotPasswordDto: ForgotPasswordDto) {
-    this.logger.log(
-      `Password reset requested for email: ${forgotPasswordDto.email}`,
-    );
-    return await this.authService.forgotPassword(forgotPasswordDto);
+  async forgotPassword(@Body() dto: ForgotPasswordDto, @Req() req: Request) {
+    return this.authService.forgotPassword(dto, ctxOf(req));
   }
 
   @Post('reset-password')
   @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: 'Reset password with token' })
-  @ApiResponse({ status: 200, description: 'Password reset successfully' })
-  @ApiResponse({ status: 400, description: 'Invalid or expired token' })
-  async resetPassword(@Body() resetPasswordDto: ResetPasswordDto) {
-    this.logger.log('Password reset attempt with token');
-    return await this.authService.resetPassword(resetPasswordDto);
+  @ApiOperation({ summary: 'Set a new password with the emailed token.' })
+  @ApiResponse({
+    status: 400,
+    description: 'TOKEN_INVALID, TOKEN_EXPIRED or fields.newPassword',
+  })
+  async resetPassword(@Body() dto: ResetPasswordDto) {
+    return this.authService.resetPassword(dto);
   }
 
-  // me endpoint can be added here if needed
+  @Post('verify-email')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Confirm an email address with the emailed token.' })
+  @ApiResponse({ status: 400, description: 'TOKEN_INVALID or TOKEN_EXPIRED' })
+  async verifyEmail(@Body() dto: VerifyEmailDto) {
+    return this.authService.verifyEmail(dto.token);
+  }
+
+  @Post('resend-verification')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Send a new confirmation link (3 per hour).' })
+  @ApiResponse({
+    status: 429,
+    description: 'RATE_LIMITED with retryAfterSeconds',
+  })
+  async resendVerification(@CurrentUser() user: User) {
+    return this.authService.resendVerification(user);
+  }
+
   @Get('me')
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
-  @ApiOperation({ summary: 'Get current authenticated user' })
-  @ApiResponse({
-    status: 200,
-    description: 'Current user retrieved successfully',
-  })
-  @ApiResponse({ status: 401, description: 'Unauthorized' })
+  @ApiOperation({ summary: 'Current user (includes emailVerified)' })
   getCurrentUser(@CurrentUser() user: User) {
-    this.logger.log(`Fetching current user: ${user.id}`);
-    return user;
+    return toPublicUser(user);
+  }
+
+  // ─────────────────────────────────────────────────────────────────
+
+  private presentedToken(
+    req: Request,
+    dto: RefreshTokenDto,
+  ): string | undefined {
+    const fromCookie = readCookie(req.headers.cookie, AUTH.cookieName);
+    if (fromCookie) return fromCookie;
+    return legacyTokensEnabled(this.config) ? dto?.refreshToken : undefined;
+  }
+
+  private sessionResponse(res: Response, s: IssuedSession) {
+    res.cookie(
+      AUTH.cookieName,
+      s.refreshToken,
+      refreshCookieOptions(this.config),
+    );
+    res.setHeader('Cache-Control', 'no-store');
+    return {
+      accessToken: s.accessToken,
+      tokenType: 'Bearer',
+      expiresIn: s.expiresIn,
+      user: s.user,
+      // Legacy: the deployed frontend stores this. Removed after AUTH.legacyRemovalDate.
+      ...(legacyTokensEnabled(this.config)
+        ? { refreshToken: s.refreshToken }
+        : {}),
+    };
+  }
+
+  private clearOptions() {
+    const options = refreshCookieOptions(this.config);
+    delete options.maxAge;
+    return options;
   }
 }

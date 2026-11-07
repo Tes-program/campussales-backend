@@ -1,3 +1,4 @@
+import { EmailVerifiedGuard } from '../auth/guards/email-verified.guard';
 import {
   Controller,
   Get,
@@ -47,6 +48,7 @@ export class ChatController {
   // --- Conversations ---
 
   @Post('conversations')
+  @UseGuards(EmailVerifiedGuard)
   @ApiOperation({ summary: 'Create or get existing conversation' })
   @ApiResponse({ status: 201, description: 'Conversation created' })
   @ApiResponse({ status: 200, description: 'Existing conversation returned' })
@@ -157,6 +159,7 @@ export class ChatController {
   }
 
   @Post('conversations/:id/messages')
+  @UseGuards(EmailVerifiedGuard)
   @ApiOperation({ summary: 'Send a message in a conversation' })
   @ApiResponse({ status: 201, description: 'Message sent' })
   @ApiResponse({ status: 404, description: 'Conversation not found' })

@@ -13,6 +13,8 @@ import { UniversitiesModule } from './universities/universities.module';
 import { UploadsModule } from './uploads/uploads.module';
 import { ChatModule } from './chat/chat.module';
 import { NotificationsModule } from './notifications/notifications.module';
+import { RateLimitModule } from './common/rate-limit/rate-limit.module';
+import { EmailModule } from './common/services/email.module';
 
 @Module({
   imports: [
@@ -62,6 +64,8 @@ import { NotificationsModule } from './notifications/notifications.module';
       }),
     }),
 
+    RateLimitModule,
+    EmailModule,
     AuthModule,
     UsersModule,
     ProductsModule,

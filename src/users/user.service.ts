@@ -4,7 +4,7 @@ import {
   ConflictException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { In, Not, Repository } from 'typeorm';
+import { In, Not, Raw, Repository } from 'typeorm';
 import { User } from './entities/user.entity';
 import { UserProfile } from './entities/user-profile.entity';
 import { CreateUserDto } from './dto/create-user.dto';
@@ -124,9 +124,12 @@ export class UsersService {
     });
   }
 
+  /** Case-insensitive: emails are compared lowercased. */
   async findByEmail(email: string): Promise<User | null> {
     return await this.usersRepository.findOne({
-      where: { email },
+      where: {
+        email: Raw((col) => `LOWER(${col}) = LOWER(:email)`, { email }),
+      },
       relations: ['profile', 'profile.university'],
     });
   }

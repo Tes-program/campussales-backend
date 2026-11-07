@@ -20,6 +20,8 @@ export interface ErrorBody {
     code: ErrorCode;
     message: string;
     fields?: FieldErrors;
+    /** Only on 429 RATE_LIMITED. Same value as the Retry-After header. */
+    retryAfterSeconds?: number;
     requestId?: string;
   };
   // ---- Legacy fields, kept for one release (remove in B2+1) ----
@@ -42,6 +44,7 @@ interface Normalised {
   code: ErrorCode;
   message: string;
   fields?: FieldErrors;
+  retryAfterSeconds?: number;
   /** Original framework message, only for logs. */
   logDetail?: string;
 }
@@ -119,6 +122,9 @@ export class HttpExceptionFilter implements ExceptionFilter {
         ...(n.fields && Object.keys(n.fields).length
           ? { fields: n.fields }
           : {}),
+        ...(n.retryAfterSeconds
+          ? { retryAfterSeconds: n.retryAfterSeconds }
+          : {}),
         ...(requestId ? { requestId } : {}),
       },
       statusCode: n.status,
@@ -131,6 +137,9 @@ export class HttpExceptionFilter implements ExceptionFilter {
 
     if (requestId && !response.headersSent) {
       response.setHeader(REQUEST_ID_HEADER, requestId);
+    }
+    if (n.retryAfterSeconds && !response.headersSent) {
+      response.setHeader('Retry-After', String(n.retryAfterSeconds));
     }
     response.status(n.status).json(body);
   }
@@ -207,6 +216,7 @@ export class HttpExceptionFilter implements ExceptionFilter {
           message?: unknown;
           fields?: FieldErrors;
           errorCode?: unknown;
+          retryAfterSeconds?: unknown;
         };
 
     // 5xx never leak their message.
@@ -257,11 +267,17 @@ export class HttpExceptionFilter implements ExceptionFilter {
           : DEFAULT_MESSAGES[code];
     }
 
+    const retryAfterSeconds =
+      typeof res === 'object' && typeof res.retryAfterSeconds === 'number'
+        ? res.retryAfterSeconds
+        : undefined;
+
     return {
       status,
       code,
       message,
       ...(fields && Object.keys(fields).length ? { fields } : {}),
+      ...(retryAfterSeconds ? { retryAfterSeconds } : {}),
       logDetail,
     };
   }

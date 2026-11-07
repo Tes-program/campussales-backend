@@ -1,20 +1,28 @@
-// src/auth/dto/reset-password.dto.ts
-import { ApiProperty } from '@nestjs/swagger';
-import { IsString, MinLength, Matches } from 'class-validator';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { Expose, Transform } from 'class-transformer';
+import { Allow, IsString, Length } from 'class-validator';
 
+/** The password rule needs the account (email/name), so it runs in the service. */
 export class ResetPasswordDto {
-  @ApiProperty({ example: 'reset-token-from-email' })
-  @IsString()
+  @ApiProperty({ description: 'The token from the emailed link.' })
+  @IsString({
+    message: 'This link is no longer valid. Please request a new one.',
+  })
+  @Length(10, 200, {
+    message: 'This link is no longer valid. Please request a new one.',
+  })
   token: string;
 
-  @ApiProperty({
-    example: 'newStrongPassword123',
-    description: 'Must be at least 8 characters with letters and numbers',
-  })
-  @IsString()
-  @MinLength(8, { message: 'Password must be at least 8 characters long' })
-  @Matches(/^(?=.*[A-Za-z])(?=.*\d)[A-Za-z\d@$!%*#?&]{8,}$/, {
-    message: 'Password must contain at least one letter and one number',
-  })
+  @ApiProperty({ description: 'Alias: password.' })
+  @Expose()
+  @Transform(
+    ({ obj }: { obj: Record<string, unknown> }) =>
+      obj.newPassword ?? obj.password,
+  )
+  @IsString({ message: 'Enter a password.' })
   newPassword: string;
+
+  @ApiPropertyOptional({ deprecated: true })
+  @Allow()
+  password?: string;
 }

@@ -1,14 +1,10 @@
 import { ConfigService } from '@nestjs/config';
 import { JwtModuleOptions } from '@nestjs/jwt';
+import { AUTH } from '../auth/auth.config';
 
 export const getJwtConfig = (
   configService: ConfigService,
 ): JwtModuleOptions => ({
   secret: configService.get('JWT_SECRET'),
-  signOptions: {
-    expiresIn: '15m', // Access token expires in 15 minutes
-  },
+  signOptions: { expiresIn: AUTH.accessTtlSeconds },
 });
-
-export const JWT_REFRESH_SECRET = 'JWT_REFRESH_SECRET';
-export const JWT_REFRESH_EXPIRES_IN = '7d';

@@ -12,6 +12,22 @@ export enum ErrorCode {
   CONFLICT = 'CONFLICT',
   RATE_LIMITED = 'RATE_LIMITED',
   SERVER_ERROR = 'SERVER_ERROR',
+  // B2 auth
+  /** 401: login failed. Never says whether the email or password was wrong. */
+  INVALID_CREDENTIALS = 'INVALID_CREDENTIALS',
+  /** 400: reset/verification token was valid but has expired. */
+  TOKEN_EXPIRED = 'TOKEN_EXPIRED',
+  /** 400: reset/verification token is unknown, used or superseded. */
+  TOKEN_INVALID = 'TOKEN_INVALID',
+  /** 403: the 24h unverified grace period is over. */
+  EMAIL_NOT_VERIFIED = 'EMAIL_NOT_VERIFIED',
+  // B4 moderation
+  /** 403: one of the two users has blocked the other. Neutral message. */
+  BLOCKED = 'BLOCKED',
+  /** 400: listing screening rejected the item. */
+  MODERATION_REJECTED = 'MODERATION_REJECTED',
+  /** 403: posting is suspended for this account. */
+  ACCOUNT_SUSPENDED = 'ACCOUNT_SUSPENDED',
 }
 
 export const ERROR_CODE_STATUS: Record<ErrorCode, number> = {
@@ -22,6 +38,13 @@ export const ERROR_CODE_STATUS: Record<ErrorCode, number> = {
   [ErrorCode.CONFLICT]: HttpStatus.CONFLICT,
   [ErrorCode.RATE_LIMITED]: HttpStatus.TOO_MANY_REQUESTS,
   [ErrorCode.SERVER_ERROR]: HttpStatus.INTERNAL_SERVER_ERROR,
+  [ErrorCode.INVALID_CREDENTIALS]: HttpStatus.UNAUTHORIZED,
+  [ErrorCode.TOKEN_EXPIRED]: HttpStatus.BAD_REQUEST,
+  [ErrorCode.TOKEN_INVALID]: HttpStatus.BAD_REQUEST,
+  [ErrorCode.EMAIL_NOT_VERIFIED]: HttpStatus.FORBIDDEN,
+  [ErrorCode.BLOCKED]: HttpStatus.FORBIDDEN,
+  [ErrorCode.MODERATION_REJECTED]: HttpStatus.BAD_REQUEST,
+  [ErrorCode.ACCOUNT_SUSPENDED]: HttpStatus.FORBIDDEN,
 };
 
 /** Maps any HTTP status to the closest contract code. */

@@ -4,7 +4,8 @@ Base URL: `/api`. JSON in, JSON out. Authenticated routes need
 `Authorization: Bearer <accessToken>`.
 
 This file is the contract the frontend builds against. It covers the endpoints
-changed in **B1 (validation and data integrity)**. Interactive docs for every
+changed in **B1 (validation and data integrity)**, **B2 (auth)**,
+**B3 (products, search, feed)** and **B4 (moderation, reports, chat safety)**. Interactive docs for every
 route are at `/api/docs` (Swagger).
 
 ---
@@ -42,6 +43,15 @@ Every non-2xx response has this body:
 | 409 | `CONFLICT` | Clashes with existing state (phone on another account, editing a sold item). May include `fields`. |
 | 429 | `RATE_LIMITED` | Too many attempts (e.g. relist bump within 24 h). |
 | 500 | `SERVER_ERROR` | Our bug. Message is generic; the server logs the details under `requestId`. |
+| 401 | `INVALID_CREDENTIALS` | Login failed: "Email or password is incorrect." Never says which. |
+| 400 | `TOKEN_INVALID` | Reset/verification link unknown, already used or superseded. |
+| 400 | `TOKEN_EXPIRED` | Reset/verification link expired. |
+| 403 | `EMAIL_NOT_VERIFIED` | 24 h unverified grace is over (write actions only). |
+| 403 | `BLOCKED` | One user blocked the other. Neutral message. |
+| 400 | `MODERATION_REJECTED` | Listing screening rejected the item (`fields` explains). |
+| 403 | `ACCOUNT_SUSPENDED` | Posting is paused for this account. |
+
+429 responses also carry `error.retryAfterSeconds` and a `Retry-After` header.
 
 ### Request ids
 
@@ -323,6 +333,81 @@ build starts serving.
 6. `npm run fix:data` (dry run), review `plan.csv`, then
    `npm run fix:data -- --apply --confirm-host=<host>`.
 
+---
+
+## 9. Auth (B2)
+
+Full design and deployment notes: [docs/security.md](security.md).
+
+### Session model
+
+- `accessToken` (15 min) comes back in the JSON body. Keep it in memory and
+  send `Authorization: Bearer …`.
+- The refresh token is the `cs_refresh` cookie (HttpOnly, Secure,
+  SameSite=Lax, Path=/api/auth, 30 days). Call every `/api/auth/*` endpoint
+  with `credentials: 'include'`.
+- On a 401 from any API call: `POST /api/auth/refresh` once; if that also
+  returns 401, send the user to login.
+
+Session response (signup, login, refresh):
+
+```json
+{ "accessToken": "…", "tokenType": "Bearer", "expiresIn": 900,
+  "user": { "id": "…", "email": "…", "fullName": "…", "emailVerified": false,
+            "verifyBy": "2026-11-08T12:00:00.000Z", "userType": "student", "…": "…" } }
+```
+
+While `AUTH_LEGACY_TOKENS=true` (until **2027-01-31**) the body also has
+`refreshToken`, and `/refresh` and `/logout` accept `{ "refreshToken": "…" }`.
+
+### Endpoints
+
+| Method & path | Auth | Body | Success | Errors |
+| --- | --- | --- | --- | --- |
+| `POST /auth/signup` | – | `name`, `email`, `password`, `acceptedTerms: true`, `acceptedTermsVersion`, optional `schoolId` or `campus`, optional `username` | 201 session + cookie; verification email sent | 400 fields · 409 email taken · 429 |
+| `POST /auth/register` | – | Deprecated alias. Legacy body (`email`, `password`, `username`) accepted only while legacy mode is on. | as signup | |
+| `POST /auth/login` | – | `email`, `password` | 200 session + cookie | 401 `INVALID_CREDENTIALS` · 429 + `retryAfterSeconds` |
+| `POST /auth/refresh` | cookie | – | 200 session + new cookie | 401 `UNAUTHENTICATED` |
+| `POST /auth/logout` | cookie | – | 204, cookie cleared | – |
+| `POST /auth/logout-all` | bearer | – | 204 | 401 |
+| `POST /auth/change-password` | bearer (+ cookie to keep this session) | `currentPassword`, `newPassword` | 200 `{ message, accessToken, expiresIn }` | 400 `fields.currentPassword` / `fields.newPassword` |
+| `POST /auth/forgot-password` | – | `email` | 200 `{ message: "If that email has an account, we've sent a link." }` (always) | 400 bad email format |
+| `POST /auth/reset-password` | – | `token`, `newPassword` | 200 `{ message }` | 400 `TOKEN_INVALID` · `TOKEN_EXPIRED` · `fields.newPassword` |
+| `POST /auth/verify-email` | – | `token` | 200 `{ message, user }` | 400 `TOKEN_INVALID` · `TOKEN_EXPIRED` |
+| `POST /auth/resend-verification` | bearer | – | 200 `{ message }` | 429 (3/hour) |
+| `GET /auth/me` | bearer | – | user (with `emailVerified`) | 401 |
+
+### Password rule (match the frontend checklist to this)
+
+- at least 8 characters
+- at least one letter and one number
+- at most 72 bytes
+- not a common password
+- doesn't contain your email or name
+
+Messages (`fields.password` / `fields.newPassword`): "Use at least 8
+characters." · "Use at least one letter and one number." · "That password is
+too long. Use 72 characters or fewer." · "That password is too common. Pick
+something harder to guess." · "Don't use your email or name in your password."
+
+### Links in emails
+
+- `{FRONTEND_URL}/reset-password?token=…` (30 minutes, single use)
+- `{FRONTEND_URL}/verify-email?token=…` (24 hours, single use)
+
+### Sign-up fields
+
+| Field | Rule / message |
+| --- | --- |
+| `name` | 2–80 characters. "Enter your name (2 to 80 characters)." |
+| `email` | valid email, stored lowercase. "Enter a valid email address." |
+| `acceptedTerms` | must be `true`. "Please accept the Terms and Privacy Policy to continue." |
+| `acceptedTermsVersion` | non-empty, ≤ 32 chars; must equal `CURRENT_TERMS_VERSION` when set. |
+| `schoolId` / `campus` | optional; id or exact name from `GET /api/schools`. "Choose your school from the list." |
+| `username` | optional, 3–30 of letters/numbers/`.`/`_`; generated from the email if omitted. |
+
+User objects never contain password hashes, token hashes or internal flags.
+
 ## 8. Deprecations (remove after one release)
 
 | What | Replace with |
@@ -334,3 +419,4 @@ build starts serving.
 | Onboarding `phoneNumber`, `universityId`, `universityName` | `phone`, `school` |
 | `PATCH /users/me` `phoneNumber` | `phone` |
 | Level alias `Graduate`; interest aliases from the old onboarding picker | canonical values |
+| `refreshToken` in auth bodies, `POST /auth/register` | cookie, `POST /auth/signup` (remove 2027-01-31) |

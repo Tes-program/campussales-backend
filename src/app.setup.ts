@@ -5,6 +5,7 @@ import compression from 'compression';
 import { HttpExceptionFilter } from './common/filters/http-exception.filter';
 import { LoggingInterceptor } from './common/interceptors/logging.interceptor';
 import { TimeoutInterceptor } from './common/interceptors/timeout.interceptor';
+import { SanitizeInterceptor } from './common/interceptors/sanitize.interceptor';
 import { requestIdMiddleware } from './common/middleware/request-id.middleware';
 import { createValidationPipe } from './common/validation/validation-errors';
 
@@ -19,16 +20,48 @@ export function configureApp(app: INestApplication): void {
   app.use(requestIdMiddleware);
 
   app.useGlobalFilters(new HttpExceptionFilter());
-  app.useGlobalInterceptors(new LoggingInterceptor(), new TimeoutInterceptor());
+  app.useGlobalInterceptors(
+    new LoggingInterceptor(),
+    new TimeoutInterceptor(),
+    new SanitizeInterceptor(),
+  );
 
   app.use(helmet({ crossOriginResourcePolicy: { policy: 'cross-origin' } }));
   app.use(compression());
 
-  const corsOrigins = configService.get<string>('CORS_ORIGIN');
+  const isProd = configService.get('NODE_ENV') === 'production';
+
+  // Behind Railway's proxy: trust one hop so req.ip is the student's IP
+  // (per-IP rate limits would otherwise treat everyone as one client).
+  const trustProxy =
+    configService.get<string>('TRUST_PROXY') ?? (isProd ? '1' : '');
+  if (trustProxy) {
+    (
+      app.getHttpAdapter().getInstance() as {
+        set: (k: string, v: unknown) => void;
+      }
+    ).set(
+      'trust proxy',
+      /^\d+$/.test(trustProxy) ? Number(trustProxy) : trustProxy,
+    );
+  }
+
+  // Only the configured frontend origin(s); localhost dev servers outside production.
+  const configured = (configService.get<string>('CORS_ORIGIN') || '')
+    .split(',')
+    .map((o) => o.trim())
+    .filter(Boolean);
+  const devOrigins = isProd
+    ? []
+    : [
+        'http://localhost:5173',
+        'http://localhost:4173',
+        'http://localhost:3000',
+      ];
   app.enableCors({
-    origin: corsOrigins ? corsOrigins.split(',').map((o) => o.trim()) : [],
+    origin: [...new Set([...configured, ...devOrigins])],
     credentials: true,
-    exposedHeaders: ['X-Request-Id'],
+    exposedHeaders: ['X-Request-Id', 'Retry-After'],
   });
 
   app.useGlobalPipes(createValidationPipe());

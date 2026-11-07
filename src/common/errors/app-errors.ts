@@ -12,14 +12,24 @@ export interface AppErrorPayload {
   code: ErrorCode;
   message: string;
   fields?: FieldErrors;
+  /** Only on 429s. Also sent as the Retry-After header. */
+  retryAfterSeconds?: number;
 }
 
 export class AppError extends HttpException {
-  constructor(code: ErrorCode, message?: string, fields?: FieldErrors) {
+  constructor(
+    code: ErrorCode,
+    message?: string,
+    fields?: FieldErrors,
+    extra: { retryAfterSeconds?: number } = {},
+  ) {
     const payload: AppErrorPayload = {
       code,
       message: message ?? DEFAULT_MESSAGES[code],
       ...(fields && Object.keys(fields).length ? { fields } : {}),
+      ...(extra.retryAfterSeconds !== undefined
+        ? { retryAfterSeconds: Math.max(1, Math.ceil(extra.retryAfterSeconds)) }
+        : {}),
     };
     super(payload, ERROR_CODE_STATUS[code]);
   }
@@ -37,5 +47,7 @@ export const forbidden = (message?: string) =>
   new AppError(ErrorCode.FORBIDDEN, message);
 export const conflict = (message?: string, fields?: FieldErrors) =>
   new AppError(ErrorCode.CONFLICT, message, fields);
-export const rateLimited = (message?: string) =>
-  new AppError(ErrorCode.RATE_LIMITED, message);
+export const rateLimited = (message?: string, retryAfterSeconds?: number) =>
+  new AppError(ErrorCode.RATE_LIMITED, message, undefined, {
+    retryAfterSeconds,
+  });

@@ -1,20 +1,14 @@
-// src/auth/dto/change-password.dto.ts
 import { ApiProperty } from '@nestjs/swagger';
-import { IsString, MinLength, Matches } from 'class-validator';
+import { IsString, MaxLength } from 'class-validator';
 
+/** The password rule needs the account (email/name), so it runs in the service. */
 export class ChangePasswordDto {
-  @ApiProperty({ example: 'currentPassword123' })
-  @IsString()
+  @ApiProperty()
+  @IsString({ message: 'Enter your current password.' })
+  @MaxLength(1024, { message: 'Enter your current password.' })
   currentPassword: string;
 
-  @ApiProperty({
-    example: 'newStrongPassword123',
-    description: 'Must be at least 8 characters with letters and numbers',
-  })
-  @IsString()
-  @MinLength(8, { message: 'Password must be at least 8 characters long' })
-  @Matches(/^(?=.*[A-Za-z])(?=.*\d)[A-Za-z\d@$!%*#?&]{8,}$/, {
-    message: 'Password must contain at least one letter and one number',
-  })
+  @ApiProperty()
+  @IsString({ message: 'Enter a password.' })
   newPassword: string;
 }

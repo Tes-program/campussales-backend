@@ -35,4 +35,23 @@ export default async function globalSetup() {
   } finally {
     await AppDataSource.destroy();
   }
+
+  // Fresh rate-limit counters for this run.
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { Redis } = require('ioredis');
+  const redis = new Redis({
+    host: process.env.REDIS_HOST || 'localhost',
+    port: Number(process.env.REDIS_PORT || 6379),
+    password: process.env.REDIS_PASSWORD || undefined,
+    lazyConnect: true,
+  });
+  try {
+    await redis.connect();
+    const keys: string[] = await redis.keys('cs:test:*');
+    if (keys.length) await redis.del(...keys);
+  } catch {
+    // Redis down: the service falls back to memory, nothing to clear.
+  } finally {
+    redis.disconnect();
+  }
 }

@@ -13,6 +13,16 @@ export const DEFAULT_MESSAGES: Record<ErrorCode, string> = {
   [ErrorCode.CONFLICT]: 'That clashes with something that already exists.',
   [ErrorCode.RATE_LIMITED]:
     "You're doing that too often. Please wait a moment and try again.",
+  [ErrorCode.INVALID_CREDENTIALS]: 'Email or password is incorrect.',
+  [ErrorCode.TOKEN_EXPIRED]: 'This link has expired. Please request a new one.',
+  [ErrorCode.TOKEN_INVALID]:
+    'This link is no longer valid. Please request a new one.',
+  [ErrorCode.EMAIL_NOT_VERIFIED]:
+    'Please verify your email to keep using CampusSales. Check your inbox for the link.',
+  [ErrorCode.BLOCKED]: "You can't interact with this account.",
+  [ErrorCode.MODERATION_REJECTED]: "This listing can't be posted.",
+  [ErrorCode.ACCOUNT_SUSPENDED]:
+    'Posting is paused on your account. Check your email for details.',
   [ErrorCode.SERVER_ERROR]:
     'Something went wrong on our side. Please try again in a moment.',
 };

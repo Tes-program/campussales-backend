@@ -1,553 +1,518 @@
-/* eslint-disable @typescript-eslint/no-unused-vars */
-import {
-  Injectable,
-  UnauthorizedException,
-  ConflictException,
-  BadRequestException,
-  Logger,
-} from '@nestjs/common';
-import { JwtService } from '@nestjs/jwt';
+import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { JwtService } from '@nestjs/jwt';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
 import * as bcrypt from 'bcryptjs';
-import { UsersService } from '../users/user.service';
-import { User } from '../users/entities/user.entity';
-import { RefreshToken } from './entities/refresh-token.entity';
-import { RegisterDto } from './dto/register.dto';
-import { LoginDto } from './dto/login.dto';
+import { randomBytes, randomInt } from 'crypto';
+import { IsNull, Repository } from 'typeorm';
 import {
-  JwtPayload,
-  AuthTokens,
-  AuthResponse,
-} from './interfaces/jwt-payload.interface';
-import {
-  JWT_REFRESH_SECRET,
-  JWT_REFRESH_EXPIRES_IN,
-} from '../config/jwt.config';
-import { PasswordReset } from './entities/password-reset.entity';
+  AppError,
+  rateLimited,
+  ValidationFailed,
+} from '../common/errors/app-errors';
+import { ErrorCode } from '../common/errors/error-codes';
+import { RateLimitService } from '../common/rate-limit/rate-limit.service';
 import { EmailService } from '../common/services/email.service';
-import { randomBytes, createHash } from 'crypto';
+import { UserStatus, UserType } from '../common/enum/user.enums';
+import { SchoolsService } from '../universities/schools.service';
+import { User } from '../users/entities/user.entity';
+import { toPublicUser, UsersService } from '../users/user.service';
+import { AUTH, frontendUrl } from './auth.config';
 import { ChangePasswordDto } from './dto/change-password.dto';
 import { ForgotPasswordDto } from './dto/forgot-password.dto';
+import { LoginDto } from './dto/login.dto';
 import { ResetPasswordDto } from './dto/reset-password.dto';
+import {
+  LegacyRegisterDto,
+  SignupDto,
+  SIGNUP_MESSAGES,
+} from './dto/signup.dto';
+import { EmailVerification } from './entities/email-verification.entity';
+import { PasswordReset } from './entities/password-reset.entity';
+import { JwtPayload } from './interfaces/jwt-payload.interface';
+import { checkPassword } from './password-policy';
+import { RefreshTokenService, sha256 } from './refresh-token.service';
+
+export const BCRYPT_COST = 12;
+export const FORGOT_PASSWORD_MESSAGE =
+  "If that email has an account, we've sent a link.";
+
+/**
+ * Real cost-12 hash of a random string, compared against when the email is
+ * unknown so wrong-email and wrong-password do the same work.
+ */
+const DUMMY_HASH = bcrypt.hashSync(
+  randomBytes(16).toString('hex'),
+  BCRYPT_COST,
+);
+
+export interface SessionContext {
+  ip?: string;
+  userAgent?: string;
+}
+
+export interface IssuedSession {
+  accessToken: string;
+  expiresIn: number;
+  refreshToken: string;
+  familyId: string;
+  user: ReturnType<typeof toPublicUser<User>>;
+}
+
+const invalidCredentials = () => new AppError(ErrorCode.INVALID_CREDENTIALS);
 
 @Injectable()
 export class AuthService {
   private readonly logger = new Logger(AuthService.name);
 
   constructor(
-    private usersService: UsersService,
-    private jwtService: JwtService,
-    private configService: ConfigService,
-    @InjectRepository(RefreshToken)
-    private refreshTokenRepository: Repository<RefreshToken>,
+    private readonly usersService: UsersService,
+    private readonly jwtService: JwtService,
+    private readonly config: ConfigService,
+    private readonly refreshTokens: RefreshTokenService,
+    private readonly rateLimit: RateLimitService,
+    private readonly email: EmailService,
+    private readonly schools: SchoolsService,
+    @InjectRepository(User) private readonly users: Repository<User>,
     @InjectRepository(PasswordReset)
-    private passwordResetRepository: Repository<PasswordReset>,
-    private emailService: EmailService,
+    private readonly resets: Repository<PasswordReset>,
+    @InjectRepository(EmailVerification)
+    private readonly verifications: Repository<EmailVerification>,
   ) {}
 
-  async register(registerDto: RegisterDto): Promise<AuthResponse> {
-    try {
-      // Validate email format
-      if (!registerDto.email || !registerDto.email.includes('@')) {
-        throw new BadRequestException('Invalid email format');
-      }
+  // ───────────────────────────── sign-up ──────────────────────────────
 
-      // Validate password strength
-      if (!registerDto.password || registerDto.password.length < 6) {
-        throw new BadRequestException(
-          'Password must be at least 6 characters long',
-        );
-      }
-
-      // Check if user exists
-      const existingUser = await this.usersService.findByEmail(
-        registerDto.email,
+  async signup(
+    dto: SignupDto | LegacyRegisterDto,
+    ctx: SessionContext,
+  ): Promise<IssuedSession> {
+    const limit = await this.rateLimit.consume(
+      RateLimitService.key('signup-ip', ctx.ip ?? 'unknown'),
+      AUTH.signup.perIp,
+      AUTH.signup.windowMs,
+    );
+    if (!limit.allowed) {
+      throw rateLimited(
+        'Too many sign-ups from this network. Please try again later.',
+        limit.retryAfterSeconds,
       );
-      if (existingUser) {
-        throw new ConflictException(
-          'An account with this email already exists',
-        );
-      }
+    }
 
-      // Check if username exists
-      const existingUsername = await this.usersService.findByUsername(
-        registerDto.username,
-      );
-      if (existingUsername) {
-        throw new ConflictException(
-          'This username is already taken. Please choose another one',
-        );
-      }
-
-      // Hash password
-      const passwordHash = await bcrypt.hash(registerDto.password, 12);
-
-      // Create user
-      const user = await this.usersService.create({
-        email: registerDto.email,
-        passwordHash,
-        username: registerDto.username,
+    // Decision (documented in docs/security.md): an existing email gets a
+    // clear 409 instead of a neutral flow, because sign-up logs the user in
+    // straight away. Enumeration is limited by the per-IP sign-up limit.
+    if (await this.usersService.findByEmail(dto.email)) {
+      throw new AppError(ErrorCode.CONFLICT, SIGNUP_MESSAGES.emailTaken, {
+        email: SIGNUP_MESSAGES.emailTaken,
       });
-
-      if (!user) {
-        throw new BadRequestException('Failed to create user account');
-      }
-
-      // Generate tokens
-      const tokens = await this.generateTokens(user);
-
-      return {
-        ...tokens,
-        user: {
-          id: user.id,
-          email: user.email,
-          userType: user.userType,
-          status: user.status,
-        },
-      };
-    } catch (error) {
-      // Re-throw known errors
-      if (
-        error instanceof ConflictException ||
-        error instanceof BadRequestException
-      ) {
-        throw error;
-      }
-      // Handle unexpected errors
-      throw new BadRequestException(
-        'Registration failed. Please try again later',
-      );
     }
-  }
 
-  async login(loginDto: LoginDto): Promise<AuthResponse> {
-    try {
-      // Validate input
-      if (!loginDto.email || !loginDto.password) {
-        throw new BadRequestException('Email and password are required');
-      }
-
-      const user = await this.validateUser(loginDto.email, loginDto.password);
-
-      // Check if user account is active
-      if (!user.isActive) {
-        throw new UnauthorizedException(
-          'Your account has been deactivated. Please contact support',
-        );
-      }
-
-      const tokens = await this.generateTokens(user);
-
-      return {
-        ...tokens,
-        user: {
-          id: user.id,
-          email: user.email,
-          userType: user.userType,
-          status: user.status,
-          profile: user.profile,
-        },
-      };
-    } catch (error) {
-      if (
-        error instanceof UnauthorizedException ||
-        error instanceof BadRequestException
-      ) {
-        throw error;
-      }
-      throw new UnauthorizedException('Login failed. Please try again');
-    }
-  }
-
-  async refresh(refreshToken: string): Promise<AuthTokens> {
-    try {
-      if (!refreshToken) {
-        throw new UnauthorizedException('Refresh token is required');
-      }
-
-      // Verify refresh token JWT signature and expiry
-      let payload: any;
-      try {
-        payload = this.jwtService.verify(refreshToken, {
-          secret: this.configService.get(JWT_REFRESH_SECRET),
+    let signupSchoolId: string | null = null;
+    const schoolRef = dto.schoolId ?? dto.campus;
+    if (schoolRef) {
+      const school = await this.schools.resolve(schoolRef);
+      if (!school) {
+        throw new ValidationFailed({
+          [dto.schoolId ? 'schoolId' : 'campus']: SIGNUP_MESSAGES.school,
         });
-      } catch (jwtError) {
-        throw new UnauthorizedException(
-          'Invalid or expired refresh token. Please login again',
-        );
       }
-
-      // Create deterministic hash of the token for database lookup
-      const tokenHash = createHash('sha256').update(refreshToken).digest('hex');
-
-      // Check if refresh token exists in database and is not revoked
-      const storedToken = await this.refreshTokenRepository.findOne({
-        where: {
-          tokenHash,
-          userId: payload.sub,
-          isRevoked: false,
-        },
-      });
-
-      if (!storedToken) {
-        throw new UnauthorizedException(
-          'Invalid refresh token. Please login again',
-        );
-      }
-
-      // Check expiry (belt and suspenders - JWT already validated this)
-      if (storedToken.expiresAt < new Date()) {
-        throw new UnauthorizedException(
-          'Refresh token has expired. Please login again',
-        );
-      }
-
-      // Get user and verify account status
-      const user = await this.usersService.findById(payload.sub);
-      if (!user) {
-        throw new UnauthorizedException('User not found');
-      }
-
-      if (!user.isActive) {
-        throw new UnauthorizedException('Account is deactivated');
-      }
-
-      // Revoke old refresh token (token rotation for security)
-      storedToken.isRevoked = true;
-      await this.refreshTokenRepository.save(storedToken);
-
-      // Generate new tokens
-      return this.generateTokens(user);
-    } catch (error) {
-      if (error instanceof UnauthorizedException) {
-        throw error;
-      }
-      throw new UnauthorizedException(
-        'Invalid or expired refresh token. Please login again',
-      );
-    }
-  }
-
-  async logout(userId: string, refreshToken: string): Promise<void> {
-    try {
-      if (!userId || !refreshToken) {
-        throw new BadRequestException('User ID and refresh token are required');
-      }
-
-      // Create deterministic hash for database lookup
-      const tokenHash = createHash('sha256').update(refreshToken).digest('hex');
-
-      await this.refreshTokenRepository.update(
-        { userId, tokenHash, isRevoked: false },
-        { isRevoked: true },
-      );
-
-      // Even if token is not found, we consider logout successful
-      // This prevents information leakage
-    } catch (error) {
-      if (error instanceof BadRequestException) {
-        throw error;
-      }
-      // Don't throw error on logout failure - fail silently for security
-    }
-  }
-
-  private async validateUser(email: string, password: string): Promise<User> {
-    if (!email || !password) {
-      throw new UnauthorizedException('Email and password are required');
+      signupSchoolId = school.id;
     }
 
-    const user = await this.usersService.findByEmail(email);
-
-    if (!user) {
-      // Use generic message to prevent email enumeration
-      throw new UnauthorizedException('Invalid credentials');
+    let username = dto.username;
+    if (username) {
+      if (await this.usersService.findByUsername(username)) {
+        throw new AppError(ErrorCode.CONFLICT, SIGNUP_MESSAGES.usernameTaken, {
+          username: SIGNUP_MESSAGES.usernameTaken,
+        });
+      }
+    } else {
+      username = await this.generateUsername(dto.email);
     }
 
-    const isPasswordValid = await bcrypt.compare(
-      password,
-      user.passwordHash || '',
+    const acceptedTerms = dto.acceptedTerms === true;
+    const user = await this.users.save(
+      this.users.create({
+        email: dto.email,
+        username,
+        passwordHash: await bcrypt.hash(dto.password, BCRYPT_COST),
+        fullName: dto.name ?? null,
+        userType: UserType.STUDENT, // never trust a client-supplied role
+        status: UserStatus.ACTIVE,
+        signupSchoolId,
+        acceptedTermsVersion: acceptedTerms
+          ? (dto.acceptedTermsVersion ?? null)
+          : null,
+        acceptedTermsAt: acceptedTerms ? new Date() : null,
+        verifyBy: new Date(Date.now() + AUTH.verifyGraceHours * 3_600_000),
+      }),
     );
 
-    if (!isPasswordValid) {
-      throw new UnauthorizedException('Invalid credentials');
-    }
-
-    return user;
+    this.sendVerification(user).catch(() => undefined);
+    const fresh = await this.usersService.findByIdOrFail(user.id);
+    return this.startSession(fresh, ctx);
   }
 
-  private async generateTokens(user: User): Promise<AuthTokens> {
-    try {
-      if (!user || !user.id) {
-        throw new BadRequestException('Invalid user data for token generation');
-      }
+  // ───────────────────────────── login ────────────────────────────────
 
-      const payload: JwtPayload = {
-        sub: user.id,
-        email: user.email,
-        userType: user.userType,
-        status: user.status,
-      };
+  /**
+   * Always "Email or password is incorrect." (INVALID_CREDENTIALS) on failure,
+   * with equal work for unknown emails. After 5 failures per account or 20
+   * per IP in 15 minutes, further attempts wait a progressively longer delay
+   * (30s, 60s, 120s ... capped at 15 min) instead of a hard lock-out.
+   */
+  async login(dto: LoginDto, ctx: SessionContext): Promise<IssuedSession> {
+    const acctKey = RateLimitService.key('login-acct', dto.email);
+    const ipKey = RateLimitService.key('login-ip', ctx.ip ?? 'unknown');
+    await this.enforceLoginDelay(acctKey, AUTH.login.perAccount);
+    await this.enforceLoginDelay(ipKey, AUTH.login.perIp);
 
-      // Generate access token
-      const accessToken = this.jwtService.sign(payload);
+    const user = await this.usersService.findByEmail(dto.email);
+    const ok = await bcrypt.compare(
+      dto.password,
+      user?.passwordHash || DUMMY_HASH,
+    );
 
-      // Generate refresh token
-      const refreshToken = this.jwtService.sign(payload, {
-        secret: this.configService.get(JWT_REFRESH_SECRET),
-        expiresIn: JWT_REFRESH_EXPIRES_IN,
-      });
+    if (!user || !ok) {
+      await this.rateLimit.hit(acctKey, AUTH.login.windowMs);
+      await this.rateLimit.hit(ipKey, AUTH.login.windowMs);
+      throw invalidCredentials();
+    }
 
-      // Store deterministic SHA-256 hash of refresh token for efficient lookups
-      const refreshTokenHash = createHash('sha256')
-        .update(refreshToken)
-        .digest('hex');
-      const expiresAt = new Date();
-      expiresAt.setDate(expiresAt.getDate() + 7); // 7 days
+    if (!user.isActive || user.status !== UserStatus.ACTIVE) {
+      throw new AppError(
+        ErrorCode.UNAUTHENTICATED,
+        'This account is not active. Please contact support.',
+      );
+    }
 
-      await this.refreshTokenRepository.save({
-        userId: user.id,
-        tokenHash: refreshTokenHash,
-        expiresAt,
-      });
+    await this.rateLimit.reset(acctKey);
 
-      return { accessToken, refreshToken };
-    } catch (error) {
-      if (error instanceof BadRequestException) {
-        throw error;
-      }
-      throw new BadRequestException('Failed to generate authentication tokens');
+    // Re-hash when the stored cost is below the current standard.
+    if (bcrypt.getRounds(user.passwordHash) < BCRYPT_COST) {
+      await this.users.update(
+        { id: user.id },
+        { passwordHash: await bcrypt.hash(dto.password, BCRYPT_COST) },
+      );
+    }
+
+    return this.startSession(user, ctx);
+  }
+
+  private async enforceLoginDelay(
+    key: string,
+    threshold: number,
+  ): Promise<void> {
+    const failures = await this.rateLimit.events(key, AUTH.login.windowMs);
+    if (failures.length < threshold) return;
+    const over = failures.length - threshold; // 0 on the first blocked attempt
+    const delaySeconds = Math.min(
+      AUTH.login.windowMs / 1000,
+      AUTH.login.baseDelaySeconds * 2 ** over,
+    );
+    const waitMs =
+      failures[failures.length - 1] + delaySeconds * 1000 - Date.now();
+    if (waitMs > 0) {
+      throw rateLimited(
+        'Too many attempts. Please wait a moment and try again.',
+        waitMs / 1000,
+      );
     }
   }
+
+  // ─────────────────────────── sessions ───────────────────────────────
+
+  async refresh(
+    rawToken: string | undefined,
+    ctx: SessionContext,
+  ): Promise<IssuedSession> {
+    const rotated = await this.refreshTokens.rotate(rawToken, ctx.userAgent);
+    const user = await this.usersService.findById(rotated.userId);
+    if (!user || !user.isActive || user.status !== UserStatus.ACTIVE) {
+      await this.refreshTokens.revokeFamily(rotated.familyId, 'inactive');
+      throw new AppError(
+        ErrorCode.UNAUTHENTICATED,
+        'Your session has ended. Please log in again.',
+      );
+    }
+    return {
+      ...this.accessFor(user),
+      refreshToken: rotated.token,
+      familyId: rotated.familyId,
+      user: toPublicUser(user),
+    };
+  }
+
+  /** Revokes the presented token's family. Always succeeds. */
+  async logout(rawToken: string | undefined): Promise<void> {
+    const family = await this.refreshTokens.familyOf(rawToken);
+    if (family)
+      await this.refreshTokens.revokeFamily(family.familyId, 'logout');
+  }
+
+  /** "Sign out of all devices": refresh tokens and live access tokens. */
+  async logoutAll(userId: string): Promise<void> {
+    await this.refreshTokens.revokeAllForUser(userId, 'logout_all');
+    await this.users.update({ id: userId }, { tokensValidAfter: new Date() });
+  }
+
+  // ─────────────────────────── passwords ──────────────────────────────
 
   async changePassword(
-    userId: string,
-    changePasswordDto: ChangePasswordDto,
-  ): Promise<{ message: string }> {
-    const { currentPassword, newPassword } = changePasswordDto;
-
-    // Get user
-    const user = await this.usersService.findById(userId);
-    if (!user) {
-      throw new UnauthorizedException('User not found');
+    user: User,
+    dto: ChangePasswordDto,
+    currentRefreshToken: string | undefined,
+  ): Promise<{ message: string; accessToken: string; expiresIn: number }> {
+    const fresh = await this.usersService.findByIdOrFail(user.id);
+    if (!(await bcrypt.compare(dto.currentPassword, fresh.passwordHash))) {
+      throw new ValidationFailed({
+        currentPassword: 'Your current password is incorrect.',
+      });
+    }
+    const problem = checkPassword(dto.newPassword, this.passwordContext(fresh));
+    if (problem) throw new ValidationFailed({ newPassword: problem });
+    if (await bcrypt.compare(dto.newPassword, fresh.passwordHash)) {
+      throw new ValidationFailed({
+        newPassword:
+          'Your new password must be different from your current one.',
+      });
     }
 
-    // Verify current password
-    const isPasswordValid = await bcrypt.compare(
-      currentPassword,
-      user.passwordHash,
+    await this.setPassword(fresh.id, dto.newPassword);
+    const keep = await this.refreshTokens.familyOf(currentRefreshToken);
+    await this.refreshTokens.revokeAllForUser(
+      fresh.id,
+      'password_change',
+      keep?.userId === fresh.id ? keep.familyId : undefined,
     );
+    this.email
+      .sendPasswordChangedEmail(fresh.email, this.firstName(fresh))
+      .catch(() => undefined);
 
-    if (!isPasswordValid) {
-      throw new UnauthorizedException('Current password is incorrect');
-    }
-
-    // Check if new password is same as current
-    const isSamePassword = await bcrypt.compare(newPassword, user.passwordHash);
-    if (isSamePassword) {
-      throw new BadRequestException(
-        'New password must be different from current password',
-      );
-    }
-
-    // Hash new password
-    const newPasswordHash = await bcrypt.hash(newPassword, 12);
-
-    // Update password
-    await this.usersService.updatePassword(userId, newPasswordHash);
-
-    // Revoke all refresh tokens for security
-    await this.refreshTokenRepository.update(
-      { userId, isRevoked: false },
-      { isRevoked: true },
-    );
-
-    // Send notification email
-    await this.emailService.sendPasswordChangedEmail(
-      user.email,
-      user.profile?.firstName,
-    );
-
+    // Older access tokens are now rejected, so hand back a fresh one.
+    const refreshed = await this.usersService.findByIdOrFail(fresh.id);
     return {
-      message:
-        'Password changed successfully. Please login again with your new password.',
+      message: 'Password changed. You were signed out on your other devices.',
+      ...this.accessFor(refreshed),
     };
   }
 
   /**
-   * Initiate forgot password flow
+   * Always resolves with the same message (no account enumeration). Limits
+   * (3/hour per email, 20/hour per IP) are applied silently. The email is
+   * sent in the background so response time does not reveal anything.
    */
   async forgotPassword(
-    forgotPasswordDto: ForgotPasswordDto,
+    dto: ForgotPasswordDto,
+    ctx: SessionContext,
   ): Promise<{ message: string }> {
-    try {
-      const { email } = forgotPasswordDto;
-
-      if (!email) {
-        throw new BadRequestException('Email is required');
-      }
-
-      // Find user by email
-      const user = await this.usersService.findByEmail(email);
-
-      // Don't reveal if email exists or not (security best practice)
-      if (!user) {
-        this.logger.warn(
-          `Password reset requested for non-existent email: ${email}`,
-        );
-        return {
-          message:
-            'If that email exists in our system, a password reset link has been sent.',
-        };
-      }
-
-      // Generate reset token
-      const resetToken = randomBytes(32).toString('hex');
-      const tokenHash = createHash('sha256').update(resetToken).digest('hex');
-
-      // Set expiry time (1 hour from now)
-      const expiresAt = new Date();
-      expiresAt.setHours(expiresAt.getHours() + 1);
-
-      // Invalidate any existing unused reset tokens for this user
-      await this.passwordResetRepository.update(
-        { userId: user.id, isUsed: false },
-        { isUsed: true },
+    const perEmail = await this.rateLimit.consume(
+      RateLimitService.key('forgot-email', dto.email),
+      AUTH.forgotPassword.perEmail,
+      AUTH.forgotPassword.windowMs,
+    );
+    const perIp = await this.rateLimit.consume(
+      RateLimitService.key('forgot-ip', ctx.ip ?? 'unknown'),
+      AUTH.forgotPassword.perIp,
+      AUTH.forgotPassword.windowMs,
+    );
+    if (perEmail.allowed && perIp.allowed) {
+      this.issueReset(dto.email).catch((e: Error) =>
+        this.logger.error(`Password reset issue failed: ${e.name}`),
       );
+    }
+    return { message: FORGOT_PASSWORD_MESSAGE };
+  }
 
-      // Save reset token
-      await this.passwordResetRepository.save({
+  private async issueReset(email: string): Promise<void> {
+    const user = await this.usersService.findByEmail(email);
+    if (!user || !user.isActive) return;
+    const token = randomBytes(32).toString('base64url');
+    // A newer link supersedes any older unused one.
+    await this.resets.update(
+      { userId: user.id, isUsed: false },
+      { isUsed: true },
+    );
+    await this.resets.save(
+      this.resets.create({
         userId: user.id,
-        token: tokenHash,
-        expiresAt,
+        token: sha256(token),
+        expiresAt: new Date(Date.now() + AUTH.resetTtlMinutes * 60_000),
         isUsed: false,
-      });
-
-      this.logger.log(`Password reset token saved for user: ${user.id}`);
-
-      // Send reset email
-      await this.emailService.sendPasswordResetEmail(
-        user.email,
-        resetToken,
-        user.profile?.firstName,
-      );
-
-      return {
-        message:
-          'If that email exists in our system, a password reset link has been sent.',
-      };
-    } catch (error) {
-      this.logger.error(
-        `Failed to process forgot password: ${error.message}`,
-        error.stack,
-      );
-      if (error instanceof BadRequestException) {
-        throw error;
-      }
-      return {
-        message:
-          'If that email exists in our system, a password reset link has been sent.',
-      };
-    }
+      }),
+    );
+    const url = `${frontendUrl(this.config)}/reset-password?token=${encodeURIComponent(token)}`;
+    await this.email.sendPasswordResetEmail(
+      user.email,
+      url,
+      AUTH.resetTtlMinutes,
+      this.firstName(user),
+    );
   }
 
-  /**
-   * Reset password using token
-   */
-  async resetPassword(
-    resetPasswordDto: ResetPasswordDto,
-  ): Promise<{ message: string }> {
-    try {
-      const { token, newPassword } = resetPasswordDto;
-
-      if (!token || !newPassword) {
-        throw new BadRequestException('Token and new password are required');
-      }
-
-      if (newPassword.length < 6) {
-        throw new BadRequestException(
-          'New password must be at least 6 characters long',
-        );
-      }
-
-      // Hash the incoming token and look it up directly
-      const tokenHash = createHash('sha256').update(token).digest('hex');
-      const matchedReset = await this.passwordResetRepository.findOne({
-        where: {
-          token: tokenHash,
-          isUsed: false,
-        },
-        relations: ['user'],
-      });
-
-      // Check if token is expired
-      if (matchedReset && matchedReset.expiresAt <= new Date()) {
-        matchedReset.isUsed = true;
-        await this.passwordResetRepository.save(matchedReset);
-      }
-
-      if (!matchedReset || matchedReset.expiresAt <= new Date()) {
-        throw new BadRequestException(
-          'Invalid or expired password reset token. Please request a new one',
-        );
-      }
-
-      // Hash new password
-      const newPasswordHash = await bcrypt.hash(newPassword, 12);
-
-      // Update user password
-      await this.usersService.updatePassword(
-        matchedReset.userId,
-        newPasswordHash,
-      );
-
-      // Mark token as used
-      matchedReset.isUsed = true;
-      await this.passwordResetRepository.save(matchedReset);
-
-      // Revoke all refresh tokens
-      await this.refreshTokenRepository.update(
-        { userId: matchedReset.userId, isRevoked: false },
-        { isRevoked: true },
-      );
-
-      // Send notification email
-      try {
-        await this.emailService.sendPasswordChangedEmail(
-          matchedReset.user.email,
-          matchedReset.user.profile?.firstName,
-        );
-      } catch (emailError) {
-        // Log but don't fail the password reset
-      }
-
-      return {
-        message:
-          'Password reset successfully. Please login with your new password.',
-      };
-    } catch (error) {
-      if (error instanceof BadRequestException) {
-        throw error;
-      }
-      throw new BadRequestException(
-        'Failed to reset password. Please try again or request a new reset link',
-      );
+  async resetPassword(dto: ResetPasswordDto): Promise<{ message: string }> {
+    const reset = await this.resets.findOne({
+      where: { token: sha256(dto.token) },
+    });
+    if (!reset || reset.isUsed) throw new AppError(ErrorCode.TOKEN_INVALID);
+    if (reset.expiresAt.getTime() <= Date.now()) {
+      await this.resets.update({ id: reset.id }, { isUsed: true });
+      throw new AppError(ErrorCode.TOKEN_EXPIRED);
     }
+    const user = await this.usersService.findByIdOrFail(reset.userId);
+    const problem = checkPassword(dto.newPassword, this.passwordContext(user));
+    if (problem) throw new ValidationFailed({ newPassword: problem });
+
+    // Single use: claim the token atomically before changing anything.
+    const claimed = await this.resets.update(
+      { id: reset.id, isUsed: false },
+      { isUsed: true },
+    );
+    if (!claimed.affected) throw new AppError(ErrorCode.TOKEN_INVALID);
+
+    await this.setPassword(user.id, dto.newPassword);
+    await this.refreshTokens.revokeAllForUser(user.id, 'password_change');
+    this.email
+      .sendPasswordChangedEmail(user.email, this.firstName(user))
+      .catch(() => undefined);
+    return {
+      message:
+        'Your password has been reset. Please log in with your new password.',
+    };
   }
 
-  /**
-   * Cleanup expired password reset tokens (can be run as a cron job)
-   */
-  async cleanupExpiredResetTokens(): Promise<number> {
-    const result = await this.passwordResetRepository
-      .createQueryBuilder()
-      .delete()
-      .where('expiresAt < :now', { now: new Date() })
-      .orWhere('isUsed = :isUsed', { isUsed: true })
-      .execute();
+  // ─────────────────────── email verification ─────────────────────────
 
-    return result.affected || 0;
+  async verifyEmail(
+    token: string,
+  ): Promise<{ message: string; user: ReturnType<typeof toPublicUser<User>> }> {
+    const row = await this.verifications.findOne({
+      where: { tokenHash: sha256(token) },
+    });
+    if (!row || row.usedAt) throw new AppError(ErrorCode.TOKEN_INVALID);
+    if (row.expiresAt.getTime() <= Date.now())
+      throw new AppError(ErrorCode.TOKEN_EXPIRED);
+    await this.verifications.update({ id: row.id }, { usedAt: new Date() });
+    await this.users.update(
+      { id: row.userId, emailVerifiedAt: IsNull() },
+      { emailVerifiedAt: new Date(), isVerified: true },
+    );
+    const user = await this.usersService.findByIdOrFail(row.userId);
+    return { message: 'Your email is confirmed.', user: toPublicUser(user) };
+  }
+
+  async resendVerification(user: User): Promise<{ message: string }> {
+    if (user.emailVerifiedAt)
+      return { message: 'Your email is already confirmed.' };
+    const limit = await this.rateLimit.consume(
+      RateLimitService.key('resend-verify', user.id),
+      AUTH.resendVerification.perUser,
+      AUTH.resendVerification.windowMs,
+    );
+    if (!limit.allowed) {
+      throw rateLimited(
+        "We've already sent a few links. Please check your inbox or try again later.",
+        limit.retryAfterSeconds,
+      );
+    }
+    await this.sendVerification(user);
+    return { message: "We've sent a new confirmation link." };
+  }
+
+  private async sendVerification(user: User): Promise<void> {
+    const token = randomBytes(32).toString('base64url');
+    await this.verifications.update(
+      { userId: user.id, usedAt: IsNull() },
+      { usedAt: new Date() },
+    );
+    await this.verifications.save(
+      this.verifications.create({
+        userId: user.id,
+        tokenHash: sha256(token),
+        expiresAt: new Date(Date.now() + AUTH.verifyLinkTtlHours * 3_600_000),
+      }),
+    );
+    const url = `${frontendUrl(this.config)}/verify-email?token=${encodeURIComponent(token)}`;
+    await this.email.sendVerificationEmail(
+      user.email,
+      url,
+      AUTH.verifyLinkTtlHours,
+      this.firstName(user),
+    );
+  }
+
+  // ───────────────────────────── helpers ──────────────────────────────
+
+  private async startSession(
+    user: User,
+    ctx: SessionContext,
+  ): Promise<IssuedSession> {
+    const { token, familyId } = await this.refreshTokens.issue(user.id, {
+      userAgent: ctx.userAgent,
+    });
+    return {
+      ...this.accessFor(user),
+      refreshToken: token,
+      familyId,
+      user: toPublicUser(user),
+    };
+  }
+
+  private accessFor(user: User): { accessToken: string; expiresIn: number } {
+    const payload: JwtPayload = {
+      sub: user.id,
+      email: user.email,
+      userType: user.userType,
+      status: user.status,
+    };
+    return {
+      accessToken: this.jwtService.sign(payload, {
+        expiresIn: AUTH.accessTtlSeconds,
+      }),
+      expiresIn: AUTH.accessTtlSeconds,
+    };
+  }
+
+  private async setPassword(userId: string, password: string): Promise<void> {
+    const now = new Date();
+    await this.users.update(
+      { id: userId },
+      {
+        passwordHash: await bcrypt.hash(password, BCRYPT_COST),
+        passwordChangedAt: now,
+        tokensValidAfter: now,
+      },
+    );
+    // Any outstanding reset link dies with the old password.
+    await this.resets.update({ userId, isUsed: false }, { isUsed: true });
+  }
+
+  private passwordContext(user: User) {
+    const name =
+      user.fullName ??
+      ([user.profile?.firstName, user.profile?.lastName]
+        .filter(Boolean)
+        .join(' ') ||
+        user.username);
+    return { email: user.email, name };
+  }
+
+  private firstName(user: User): string | null {
+    return user.profile?.firstName ?? user.fullName?.split(' ')[0] ?? null;
+  }
+
+  private async generateUsername(email: string): Promise<string> {
+    const base =
+      email
+        .split('@')[0]
+        .toLowerCase()
+        .replace(/[^a-z0-9._]/g, '')
+        .slice(0, 20) || 'student';
+    for (let i = 0; i < 10; i++) {
+      const candidate = `${base}${randomInt(1000, 9999)}`;
+      if (!(await this.usersService.findByUsername(candidate)))
+        return candidate;
+    }
+    return `${base}${randomBytes(4).toString('hex')}`;
   }
 }

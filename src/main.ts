@@ -7,8 +7,10 @@ import { AppModule } from './app.module';
 import { configureApp } from './app.setup';
 import { RedisIoAdapter } from './common/adapters/redis-io.adapter';
 import { join } from 'path';
+import { validateEnv } from './config/env.validation';
 
 async function bootstrap() {
+  validateEnv();
   const logger = new Logger('Bootstrap');
   const app = await NestFactory.create<NestExpressApplication>(AppModule);
   const configService = app.get(ConfigService);
