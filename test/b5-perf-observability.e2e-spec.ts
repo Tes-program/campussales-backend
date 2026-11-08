@@ -624,6 +624,57 @@ describe('B5 performance, analytics and observability (e2e)', () => {
       expect(row.status).toBe('deleted');
     });
 
+    it('never cleans up photos sent in chat (URL as message content or attachment)', async () => {
+      const { user: seller, auth: sellerAuth } = await verifiedUser('seller');
+      const { user: buyer, auth: buyerAuth } = await verifiedUser('buyer');
+      const listing = await createListing(sellerAuth, 'Chat photo item');
+      const conv = await http()
+        .post('/api/chat/conversations')
+        .set(buyerAuth)
+        .send({ participantId: seller.id, productId: listing.id })
+        .expect(201);
+
+      const signed = await http()
+        .post('/api/uploads/sign')
+        .set(buyerAuth)
+        .send({ kind: 'chat' })
+        .expect(200);
+      expect(signed.body.uploads[0].publicId).toMatch(
+        /^campussales\/chat\/[0-9a-f-]{36}$/,
+      );
+
+      const ids = [randomUUID(), randomUUID()].map(
+        (id) => `campussales/chat/${id}`,
+      );
+      const urls = ids.map(
+        (pid) =>
+          `https://res.cloudinary.com/campussales-test/image/upload/v7/${pid}.jpg`,
+      );
+      for (const [i, pid] of ids.entries()) {
+        await ds.query(
+          `INSERT INTO uploads ("userId", filename, "originalName", mimetype, size, url, "uploadType", "cloudinaryPublicId", status, "createdAt")
+           VALUES ($1, $2, '', 'image/jpeg', 1, $3, 'product_image', $2, 'ready', now() - interval '25 hours')`,
+          [buyer.id, pid, urls[i]],
+        );
+      }
+      // How the current frontend sends it: the URL as the message content...
+      await http()
+        .post(`/api/chat/conversations/${conv.body.id}/messages`)
+        .set(buyerAuth)
+        .send({ content: urls[0] })
+        .expect(201);
+      // ...and the attachment field.
+      await http()
+        .post(`/api/chat/conversations/${conv.body.id}/messages`)
+        .set(buyerAuth)
+        .send({ content: 'Photo', type: 'image', attachmentUrl: urls[1] })
+        .expect(201);
+
+      const report = await app.get(UploadCleanupService).run('dry-run');
+      expect(report.publicIds).not.toContain(ids[0]);
+      expect(report.publicIds).not.toContain(ids[1]);
+    });
+
     it('deletes images of listings deleted more than 30 days ago', async () => {
       const { auth } = await verifiedUser();
       const pid = `campussales/products/${randomUUID()}`;

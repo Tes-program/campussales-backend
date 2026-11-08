@@ -13,10 +13,15 @@ import {
 import { UPLOAD_RULES } from '../upload-rules';
 
 export class SignUploadDto {
-  @ApiPropertyOptional({ enum: ['product', 'avatar'], default: 'product' })
+  @ApiPropertyOptional({
+    enum: ['product', 'avatar', 'chat'],
+    default: 'product',
+  })
   @IsOptional()
-  @IsIn(['product', 'avatar'], { message: 'Choose product or avatar.' })
-  kind?: 'product' | 'avatar';
+  @IsIn(['product', 'avatar', 'chat'], {
+    message: 'Choose product, avatar or chat.',
+  })
+  kind?: 'product' | 'avatar' | 'chat';
 
   @ApiPropertyOptional({
     minimum: 1,
@@ -40,7 +45,7 @@ export class CompleteUploadDto {
   @ApiProperty({ description: 'public_id from Cloudinary’s response' })
   @IsString()
   @MaxLength(255)
-  @Matches(/^campussales\/(products|avatars)\/[0-9a-f-]{36}$/, {
+  @Matches(/^campussales\/(products|avatars|chat)\/[0-9a-f-]{36}$/, {
     message: 'This upload is not valid.',
   })
   publicId: string;

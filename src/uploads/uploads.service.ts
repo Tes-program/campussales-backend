@@ -71,9 +71,7 @@ export class UploadsService {
         await this.usersService.update(userId, {
           profile: { profilePictureUrl: savedUpload.url },
         });
-        this.logger.log(
-          `Auto-updated profile picture for user ${userId}`,
-        );
+        this.logger.log(`Auto-updated profile picture for user ${userId}`);
       } catch (error) {
         this.logger.warn(
           `Failed to auto-update profile picture for user ${userId}: ${error.message}`,

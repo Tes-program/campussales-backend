@@ -14,11 +14,12 @@ import { Upload, UploadType } from './entities/upload.entitiy';
 import { UPLOAD_RULES } from './upload-rules';
 import { UsersService } from '../users/user.service';
 
-export type UploadKind = 'product' | 'avatar';
+export type UploadKind = 'product' | 'avatar' | 'chat';
 
 const FOLDERS: Record<UploadKind, string> = {
   product: 'campussales/products',
   avatar: 'campussales/avatars',
+  chat: 'campussales/chat',
 };
 
 /** Incoming: shrink before storing. Eager: warm the two sizes lists and item pages use. */

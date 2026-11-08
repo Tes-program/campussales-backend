@@ -652,7 +652,7 @@ Messaging or starting a chat with a blocked user (either direction): **403
 
 ### Signed direct uploads (photos never pass through the API)
 
-1. `POST /api/uploads/sign` `{ kind?: "product" | "avatar", count?: 1..5 }` →
+1. `POST /api/uploads/sign` `{ kind?: "product" | "avatar" | "chat", count?: 1..5 }` →
    `{ uploads: [{ uploadId, publicId, uploadUrl, fields, expiresAt }], maxBytes, formats }`.
 2. **Check `file.size <= maxBytes` (3 MB) on the phone first**, then
    `POST uploadUrl` as `multipart/form-data` with `file` plus **every** key in

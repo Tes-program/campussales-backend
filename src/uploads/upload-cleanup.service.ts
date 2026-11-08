@@ -30,7 +30,7 @@ export function cleanupMode(): CleanupMode {
 
 /**
  * Hourly image housekeeping (one instance per hour via a Redis lock):
- *  - uploads (signed or legacy) not attached to any listing, draft or avatar
+ *  - uploads (signed or legacy) not attached to any listing, draft, avatar or chat message
  *    24 hours after upload are deleted from Cloudinary
  *  - images of listings soft-deleted more than 30 days ago are deleted
  *
@@ -87,6 +87,11 @@ export class UploadCleanupService implements OnModuleInit, OnModuleDestroy {
                               OR (u."url" <> '' AND pi."imageUrl" = u."url"))
           AND NOT EXISTS (SELECT 1 FROM "user_profiles" up
                            WHERE u."url" <> '' AND up."profilePictureUrl" = u."url")
+          -- chat photos: the client sends the image URL as the message
+          -- content or attachmentUrl (equality, so Postgres can hash-join)
+          AND NOT EXISTS (SELECT 1 FROM "messages" m
+                           WHERE u."url" <> ''
+                             AND (m."attachmentUrl" = u."url" OR m."content" = u."url"))
           AND NOT EXISTS (SELECT 1 FROM "product_drafts" d
                            WHERE d."images" IS NOT NULL
                              AND strpos(d."images", coalesce(u."cloudinaryPublicId", u."url")) > 0)
