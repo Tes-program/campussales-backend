@@ -22,6 +22,10 @@ import { BlocksModule } from './blocks/blocks.module';
 import { ModerationModule } from './moderation/moderation.module';
 import { PrivacyModule } from './privacy/privacy.module';
 import { EmailModule } from './common/services/email.module';
+import { AppCacheModule } from './common/cache/cache.module';
+import { HealthModule } from './health/health.module';
+import { BootstrapModule } from './bootstrap/bootstrap.module';
+import { AnalyticsModule } from './analytics/analytics.module';
 
 @Module({
   imports: [
@@ -76,7 +80,9 @@ import { EmailModule } from './common/services/email.module';
     }),
 
     RateLimitModule,
+    AppCacheModule,
     EmailModule,
+    HealthModule,
     AuthModule,
     UsersModule,
     ProductsModule,
@@ -92,6 +98,8 @@ import { EmailModule } from './common/services/email.module';
     BlocksModule,
     ModerationModule,
     PrivacyModule,
+    BootstrapModule,
+    AnalyticsModule,
   ],
 })
 export class AppModule {}

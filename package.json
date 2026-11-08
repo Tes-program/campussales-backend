@@ -28,7 +28,10 @@
     "audit:data": "node scripts/audit-data.js",
     "fix:data": "node scripts/fix-data.js",
     "seed:perf": "node scripts/seed-perf.js",
-    "search:misses": "node scripts/search-misses.js"
+    "search:misses": "node scripts/search-misses.js",
+    "metrics": "node scripts/metrics.js",
+    "perf:report": "node scripts/perf-report.js",
+    "load-test": "node scripts/load-test.js"
   },
   "dependencies": {
     "@nestjs/bullmq": "^11.0.4",
@@ -47,6 +50,7 @@
     "@types/compression": "^1.8.1",
     "@types/ioredis": "^4.28.10",
     "@types/multer": "^2.0.0",
+    "bcrypt": "^6.0.0",
     "bcryptjs": "^3.0.2",
     "bullmq": "^5.70.4",
     "class-transformer": "^0.5.1",
@@ -55,9 +59,9 @@
     "compression": "^1.8.1",
     "helmet": "^8.1.0",
     "ioredis": "^5.10.0",
-    "multer": "^2.0.2",
+    "multer": "^2.5.0",
     "multer-storage-cloudinary": "^4.0.0",
-    "nodemailer": "^7.0.12",
+    "nodemailer": "^10.4.0",
     "passport": "^0.7.0",
     "passport-jwt": "^4.0.1",
     "passport-local": "^1.0.0",
@@ -75,6 +79,7 @@
     "@nestjs/cli": "^11.0.0",
     "@nestjs/schematics": "^11.0.0",
     "@nestjs/testing": "^11.0.1",
+    "@types/bcrypt": "^6.0.0",
     "@types/bcryptjs": "^3.0.0",
     "@types/express": "^5.0.0",
     "@types/jest": "^30.0.0",
@@ -82,6 +87,7 @@
     "@types/passport-jwt": "^4.0.1",
     "@types/passport-local": "^1.0.38",
     "@types/supertest": "^6.0.2",
+    "autocannon": "^8.0.0",
     "cross-env": "^10.0.0",
     "eslint": "^9.18.0",
     "eslint-config-prettier": "^10.0.1",
@@ -114,5 +120,8 @@
     ],
     "coverageDirectory": "../coverage",
     "testEnvironment": "node"
+  },
+  "overrides": {
+    "multer": "$multer"
   }
 }

@@ -1,3 +1,4 @@
+import { RateLimit } from '../common/rate-limit/rate-limit.decorator';
 import {
   Body,
   Controller,
@@ -48,6 +49,7 @@ const ctxOf = (req: Request): SessionContext => ({
 
 @ApiTags('Authentication')
 @Controller('auth')
+@RateLimit('auth')
 export class AuthController {
   private readonly logger = new Logger(AuthController.name);
 
@@ -257,6 +259,7 @@ export class AuthController {
   }
 
   @Get('me')
+  @RateLimit('default')
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Current user (includes emailVerified)' })

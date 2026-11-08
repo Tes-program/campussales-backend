@@ -1,50 +1,46 @@
-import { AsyncLocalStorage } from 'async_hooks';
-import { NextFunction, Request, Response } from 'express';
 import {
   AdvancedConsoleLogger,
+  EntitySubscriberInterface,
+  EventSubscriber,
   Logger as TypeOrmLogger,
   LoggerOptions,
   QueryRunner,
 } from 'typeorm';
+import type { AfterQueryEvent } from 'typeorm/subscriber/event/QueryEvent';
+import { currentContext } from './observability/request-context';
 
 /**
- * Counts SQL queries per HTTP request so list endpoints can be held to a
- * budget (B3: <= 5). Outside production the count is sent back as the
- * X-Query-Count header and logged in development.
+ * Counts SQL queries and database time per HTTP request (B3 query budget,
+ * B5 timing log and Server-Timing). The per-request state lives in
+ * observability/request-context.ts and is created by the timing middleware.
  */
-const store = new AsyncLocalStorage<{ count: number }>();
-
-export function queryCountMiddleware(
-  req: Request,
-  res: Response,
-  next: NextFunction,
-) {
-  const ctx = { count: 0 };
-  store.run(ctx, () => {
-    if (process.env.NODE_ENV !== 'production') {
-      const writeHead = res.writeHead.bind(res) as Response['writeHead'];
-      res.writeHead = ((...args: Parameters<Response['writeHead']>) => {
-        if (!res.headersSent) res.setHeader('X-Query-Count', String(ctx.count));
-        return writeHead(...args);
-      }) as Response['writeHead'];
-    }
-    next();
-  });
-}
-
 export function currentQueryCount(): number | undefined {
-  return store.getStore()?.count;
+  return currentContext()?.queries;
 }
 
-/** TypeORM logger that counts every query and otherwise behaves like 'advanced-console'. */
+@EventSubscriber()
+export class QueryTimingSubscriber implements EntitySubscriberInterface {
+  afterQuery(event: AfterQueryEvent<unknown>): void {
+    const ctx = currentContext();
+    if (!ctx) return;
+    ctx.queries++;
+    if (typeof event.executionTime === 'number')
+      ctx.dbMs += event.executionTime;
+  }
+}
+
+const SLOW_QUERY_MS = Number(process.env.SLOW_QUERY_MS || 500);
+
+/**
+ * TypeORM logger: 'advanced-console' behaviour, but slow queries are logged
+ * without their parameters (they can hold emails or message text).
+ */
 export class CountingQueryLogger implements TypeOrmLogger {
   private readonly inner: AdvancedConsoleLogger;
   constructor(options: LoggerOptions) {
     this.inner = new AdvancedConsoleLogger(options);
   }
   logQuery(query: string, parameters?: unknown[], queryRunner?: QueryRunner) {
-    const ctx = store.getStore();
-    if (ctx) ctx.count++;
     this.inner.logQuery(query, parameters, queryRunner);
   }
   logQueryError(
@@ -53,15 +49,12 @@ export class CountingQueryLogger implements TypeOrmLogger {
     parameters?: unknown[],
     qr?: QueryRunner,
   ) {
-    this.inner.logQueryError(String(error), query, parameters, qr);
+    // Parameters may contain personal data; the query text is enough to debug.
+    this.inner.logQueryError(String(error), query, undefined, qr);
   }
-  logQuerySlow(
-    time: number,
-    query: string,
-    parameters?: unknown[],
-    qr?: QueryRunner,
-  ) {
-    this.inner.logQuerySlow(time, query, parameters, qr);
+  logQuerySlow(time: number, query: string, _p?: unknown[], qr?: QueryRunner) {
+    if (time >= SLOW_QUERY_MS)
+      this.inner.logQuerySlow(time, query, undefined, qr);
   }
   logSchemaBuild(message: string, qr?: QueryRunner) {
     this.inner.logSchemaBuild(message, qr);

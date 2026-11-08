@@ -14,6 +14,8 @@ export enum UploadType {
   PROFILE_COVER = 'profile_cover',
 }
 
+export type UploadStatus = 'pending' | 'ready' | 'deleted';
+
 @Entity('uploads')
 export class Upload {
   @PrimaryGeneratedColumn('uuid')
@@ -46,6 +48,20 @@ export class Upload {
 
   @Column({ nullable: true })
   cloudinaryPublicId?: string;
+
+  /** Cloudinary version, so clients can build cache-safe responsive URLs. */
+  @Column({ type: 'int', nullable: true })
+  version?: number | null;
+
+  /** pending: signature issued, not uploaded/confirmed yet; ready; deleted (file removed). */
+  @Column({ type: 'varchar', length: 16, default: 'ready' })
+  status: UploadStatus;
+
+  @Column({ type: 'int', nullable: true })
+  width?: number | null;
+
+  @Column({ type: 'int', nullable: true })
+  height?: number | null;
 
   @CreateDateColumn()
   createdAt: Date;

@@ -187,6 +187,14 @@ process, consent wording and the export format before launch.
   acceptance with a timestamp (`acceptedTermsVersion/At`,
   `acceptedPrivacyVersion/At`). Sign-up already records terms (B2).
 - Notifications older than 90 days are deleted daily.
+- **Product analytics (B5):** no IP, a random anonymous id, the user id only
+  when logged in, 13-month retention, Do Not Track honoured, and a
+  "Share usage data" setting that defaults to on (legal to confirm the
+  default). Events are included in the export and unlinked on account
+  deletion. See docs/metrics.md §3.
+- **Logs (B5):** structured JSON with hashed user ids. Passwords, tokens,
+  message text and reset links are never logged, and a redaction layer masks
+  them if code ever tries.
 
 ## 8. Configuration
 

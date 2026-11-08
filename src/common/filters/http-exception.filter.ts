@@ -1,3 +1,6 @@
+import { UPLOAD_RULES } from '../../uploads/upload-rules';
+import { reportError } from '../observability/error-reporter';
+import { hashUserId } from '../observability/redact';
 import {
   ArgumentsHost,
   Catch,
@@ -5,6 +8,7 @@ import {
   HttpException,
   HttpStatus,
   Logger,
+  PayloadTooLargeException,
 } from '@nestjs/common';
 import { ThrottlerException } from '@nestjs/throttler';
 import { Request, Response } from 'express';
@@ -99,15 +103,23 @@ export class HttpExceptionFilter implements ExceptionFilter {
 
     const n = this.normalise(exception);
 
+    // Path only: query strings can carry tokens (verify/reset links) or emails.
+    const path = (request.originalUrl ?? request.url ?? '').split('?')[0];
     if (n.status >= 500) {
       const err = exception as Error;
+      reportError(exception, {
+        requestId,
+        route: `${request.method} ${path}`,
+        status: n.status,
+        userHash: hashUserId((request as { user?: { id?: string } }).user?.id),
+      });
       this.logger.error(
-        `[${requestId}] ${request.method} ${request.originalUrl ?? request.url} -> ${n.status} ${err?.name ?? ''}: ${err?.message ?? String(exception)}`,
+        `[${requestId}] ${request.method} ${path} -> ${n.status} ${err?.name ?? ''}: ${err?.message ?? String(exception)}`,
         err?.stack,
       );
     } else {
       this.logger.warn(
-        `[${requestId}] ${request.method} ${request.originalUrl ?? request.url} -> ${n.status} ${n.code}${n.logDetail ? ` (${n.logDetail})` : ''}`,
+        `[${requestId}] ${request.method} ${path} -> ${n.status} ${n.code}${n.logDetail ? ` (${n.logDetail})` : ''}`,
       );
     }
 
@@ -131,12 +143,16 @@ export class HttpExceptionFilter implements ExceptionFilter {
       message: legacyMessage,
       errorCode: n.code,
       timestamp: new Date().toISOString(),
-      path: request.url,
+      path,
       method: request.method,
     };
 
     if (requestId && !response.headersSent) {
       response.setHeader(REQUEST_ID_HEADER, requestId);
+    }
+    if (!response.headersSent) {
+      // Errors are never cached, even on routes that are public when they succeed.
+      response.setHeader('Cache-Control', 'no-store');
     }
     if (n.retryAfterSeconds && !response.headersSent) {
       response.setHeader('Retry-After', String(n.retryAfterSeconds));
@@ -150,6 +166,17 @@ export class HttpExceptionFilter implements ExceptionFilter {
         status: HttpStatus.TOO_MANY_REQUESTS,
         code: ErrorCode.RATE_LIMITED,
         message: DEFAULT_MESSAGES[ErrorCode.RATE_LIMITED],
+      };
+    }
+
+    // Multer's file size limit (legacy multipart uploads): friendly message.
+    if (exception instanceof PayloadTooLargeException) {
+      return {
+        status: HttpStatus.PAYLOAD_TOO_LARGE,
+        code: ErrorCode.VALIDATION_FAILED,
+        message: UPLOAD_RULES.tooLargeMessage,
+        fields: { images: UPLOAD_RULES.tooLargeMessage },
+        logDetail: 'file too large',
       };
     }
 

@@ -1,3 +1,5 @@
+import { ProductImage } from './entities/product-image.entity';
+import { CACHE_TTL, CacheService, CK } from '../common/cache/cache.service';
 import { Injectable } from '@nestjs/common';
 import { InjectDataSource, InjectRepository } from '@nestjs/typeorm';
 import { Brackets, DataSource, Repository, SelectQueryBuilder } from 'typeorm';
@@ -58,7 +60,77 @@ interface Search {
   categoryIds: string[];
 }
 
-const CATEGORY_CACHE_MS = 5 * 60_000;
+interface CardRow {
+  id: string;
+  title: string;
+  description: string | null;
+  price: number;
+  priceHistory: Product['priceHistory'];
+  condition: Product['condition'];
+  quantity: number;
+  status: Product['status'];
+  isAvailable: boolean;
+  isSold: boolean;
+  isFeatured: boolean;
+  viewCount: number;
+  tags: string[];
+  sellerId: string;
+  categoryId: string | null;
+  campusId: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+  catId: string | null;
+  catName: string | null;
+  catSlug: string | null;
+  sId: string | null;
+  sFullName: string | null;
+  prId: string | null;
+  prFirstName: string | null;
+  prLastName: string | null;
+  prPicture: string | null;
+  prUniversityId: string | null;
+  uId: string | null;
+  uName: string | null;
+  uCode: string | null;
+  images: ProductImage[];
+  isWishlisted?: boolean;
+}
+
+/** Shapes a card row like the entity graph toCard() reads (no hydration cost). */
+function cardRowToProduct(r: CardRow): Product {
+  return {
+    ...r,
+    category: r.catId
+      ? { id: r.catId, name: r.catName, slug: r.catSlug }
+      : null,
+    images: r.images ?? [],
+    seller: r.sId
+      ? {
+          id: r.sId,
+          fullName: r.sFullName,
+          profile: r.prId
+            ? {
+                firstName: r.prFirstName,
+                lastName: r.prLastName,
+                profilePictureUrl: r.prPicture,
+                universityId: r.prUniversityId,
+                university: r.uId
+                  ? { id: r.uId, name: r.uName, code: r.uCode }
+                  : undefined,
+              }
+            : undefined,
+        }
+      : undefined,
+  } as unknown as Product;
+}
+
+/** Order-independent cache key for a query DTO. */
+function stableKey(dto: object): string {
+  const entries = Object.entries(dto as Record<string, unknown>)
+    .filter(([, v]) => v !== undefined && v !== null && v !== '')
+    .sort(([a], [b]) => a.localeCompare(b));
+  return JSON.stringify(entries);
+}
 
 /**
  * Read side for listings: list/search with keyset cursors, the public item
@@ -69,18 +141,33 @@ const CATEGORY_CACHE_MS = 5 * 60_000;
  */
 @Injectable()
 export class ListingService {
-  private categoryCache: { at: number; bySlug: Map<string, string> } | null =
-    null;
-
   constructor(
     @InjectRepository(Product) private readonly products: Repository<Product>,
     @InjectDataSource() private readonly ds: DataSource,
     private readonly search: SearchService,
+    private readonly cache: CacheService,
   ) {}
 
   // ───────────────────────────── list ─────────────────────────────
 
+  /**
+   * Anonymous lists (the public feed, category pages, popular searches) are
+   * cached for 30 s and invalidated by listing writes; logged-in lists are
+   * never cached because blocks/reports/wishlist flags are per viewer.
+   */
   async list(dto: ListProductsQueryDto, viewer?: User): Promise<ListResult> {
+    if (viewer) return this.listUncached(dto, viewer);
+    return this.cache.wrap(
+      `${CK.list}${stableKey(dto)}`,
+      CACHE_TTL.publicFeed,
+      () => this.listUncached(dto),
+    );
+  }
+
+  private async listUncached(
+    dto: ListProductsQueryDto,
+    viewer?: User,
+  ): Promise<ListResult> {
     const limit = dto.limit ?? LIST_LIMIT_DEFAULT;
     const sort = this.resolveSort(dto);
     const cursor = dto.cursor ? decodeCursor(dto.cursor) : null;
@@ -204,6 +291,30 @@ export class ListingService {
    * blocked users return 404. Email/phone only for the owner.
    */
   async item(id: string, viewer?: User) {
+    if (!viewer) {
+      // Popular items are read far more than they change: share one load per 30 s.
+      const cached = await this.cache.wrap(CK.item(id), CACHE_TTL.item, () =>
+        this.loadItem(id),
+      );
+      this.bumpViews(id);
+      return cached;
+    }
+    const item = await this.loadItem(id, viewer);
+    if (!item.isOwner) this.bumpViews(id);
+    return item;
+  }
+
+  private bumpViews(id: string): void {
+    // Raw UPDATE: TypeORM's increment() would also bump updatedAt.
+    void this.ds
+      .query(
+        `UPDATE "products" SET "viewCount" = "viewCount" + 1 WHERE "id" = $1`,
+        [id],
+      )
+      .catch(() => undefined);
+  }
+
+  private async loadItem(id: string, viewer?: User) {
     const p = await this.products.findOne({
       where: { id },
       relations: [
@@ -237,16 +348,6 @@ export class ListingService {
       viewer ? [p.sellerId, p.id, viewer.id] : [p.sellerId],
     );
     if (stats.blocked) throw notFound(MSG.productNotFound);
-
-    if (!isOwner) {
-      // Raw UPDATE: TypeORM's increment() would also bump updatedAt.
-      void this.ds
-        .query(
-          `UPDATE "products" SET "viewCount" = "viewCount" + 1 WHERE "id" = $1`,
-          [id],
-        )
-        .catch(() => undefined);
-    }
 
     const s = p.seller;
     const card = sellerCard(p);
@@ -305,6 +406,21 @@ export class ListingService {
     limit: number,
     viewer?: User,
   ): Promise<ProductCard[]> {
+    if (!viewer) {
+      return this.cache.wrap(
+        `${CK.item(id)}:similar:${limit}`,
+        CACHE_TTL.item,
+        () => this.similarUncached(id, limit),
+      );
+    }
+    return this.similarUncached(id, limit, viewer);
+  }
+
+  private async similarUncached(
+    id: string,
+    limit: number,
+    viewer?: User,
+  ): Promise<ProductCard[]> {
     const p = await this.products.findOne({ where: { id } });
     if (!p) throw notFound(MSG.productNotFound);
     const qb = this.products
@@ -344,30 +460,42 @@ export class ListingService {
   ): Promise<Map<string, ProductCard>> {
     const out = new Map<string, ProductCard>();
     if (!ids.length) return out;
-    const qb = this.products
-      .createQueryBuilder('p')
-      .leftJoinAndSelect('p.images', 'img')
-      .leftJoinAndSelect('p.category', 'cat')
-      .leftJoinAndSelect('p.seller', 'seller')
-      .leftJoinAndSelect('seller.profile', 'profile')
-      .leftJoinAndSelect('profile.university', 'uni')
-      .where('p.id IN (:...ids)', { ids });
-    if (opts.withDeleted) qb.withDeleted();
-    if (viewer) {
-      qb.addSelect(
-        `EXISTS (SELECT 1 FROM "wishlists" w WHERE w."productId" = p.id AND w."userId" = :viewerId)`,
-        'is_wishlisted',
-      ).setParameter('viewerId', viewer.id);
-    }
-    const { entities, raw } = await qb.getRawAndEntities();
-    const wish = new Map<string, boolean>();
-    for (const r of raw as Record<string, unknown>[]) {
-      if (viewer) wish.set(r.p_id as string, !!r.is_wishlisted);
-    }
-    for (const e of entities) {
+    // Hand-written SQL instead of a 6-way TypeORM join: selects only the card
+    // columns (not whole user rows), aggregates images per product, and skips
+    // entity hydration, which was most of the CPU on feed/list requests (B5).
+    const params: unknown[] = [ids];
+    if (viewer) params.push(viewer.id);
+    const rows = await this.ds.query<CardRow[]>(
+      `SELECT p."id", p."title", p."description", p."price", p."priceHistory",
+              p."condition", p."quantity", p."status", p."isAvailable", p."isSold",
+              p."isFeatured", p."viewCount", p."tags", p."sellerId", p."categoryId",
+              p."campusId", p."createdAt", p."updatedAt",
+              c."id" AS "catId", c."name" AS "catName", c."slug" AS "catSlug",
+              s."id" AS "sId", s."fullName" AS "sFullName",
+              pr."id" AS "prId", pr."firstName" AS "prFirstName", pr."lastName" AS "prLastName",
+              pr."profilePictureUrl" AS "prPicture", pr."universityId" AS "prUniversityId",
+              u."id" AS "uId", u."name" AS "uName", u."code" AS "uCode",
+              (SELECT coalesce(json_agg(json_build_object(
+                        'id', i."id", 'imageUrl', i."imageUrl", 'isPrimary', i."isPrimary",
+                        'sortOrder', i."sortOrder", 'publicId', i."publicId", 'version', i."version")), '[]'::json)
+                 FROM "product_images" i WHERE i."productId" = p."id") AS "images"
+              ${viewer ? `, EXISTS (SELECT 1 FROM "wishlists" w WHERE w."productId" = p."id" AND w."userId" = $2) AS "isWishlisted"` : ''}
+         FROM "products" p
+         LEFT JOIN "categories" c ON c."id" = p."categoryId"
+         LEFT JOIN "users" s ON s."id" = p."sellerId"
+         LEFT JOIN "user_profiles" pr ON pr."userId" = s."id"
+         LEFT JOIN "universities" u ON u."id" = pr."universityId"
+        WHERE p."id" = ANY($1::uuid[])
+          ${opts.withDeleted ? '' : 'AND p."deletedAt" IS NULL'}`,
+      params,
+    );
+    for (const r of rows) {
       out.set(
-        e.id,
-        toCard(e, viewer ? { isWishlisted: wish.get(e.id) ?? false } : {}),
+        r.id,
+        toCard(
+          cardRowToProduct(r),
+          viewer ? { isWishlisted: !!r.isWishlisted } : {},
+        ),
       );
     }
     return out;
@@ -517,18 +645,16 @@ export class ListingService {
   }
 
   private async categoryMap(): Promise<Map<string, string>> {
-    if (
-      this.categoryCache &&
-      Date.now() - this.categoryCache.at < CATEGORY_CACHE_MS
-    ) {
-      return this.categoryCache.bySlug;
-    }
-    const rows = await this.ds
-      .getRepository(Category)
-      .find({ where: { isActive: true } });
-    const bySlug = new Map(rows.map((r) => [r.slug, r.id]));
-    this.categoryCache = { at: Date.now(), bySlug };
-    return bySlug;
+    return this.cache.wrap(
+      `${CK.categories}slug-map`,
+      CACHE_TTL.categories,
+      async () => {
+        const rows = await this.ds
+          .getRepository(Category)
+          .find({ where: { isActive: true } });
+        return new Map(rows.map((r) => [r.slug, r.id]));
+      },
+    );
   }
 }
 

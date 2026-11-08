@@ -1,3 +1,4 @@
+import { ListingCacheInvalidator } from '../common/cache/listing-cache';
 import { Injectable } from '@nestjs/common';
 import { InjectDataSource, InjectRepository } from '@nestjs/typeorm';
 import { DataSource, MoreThan, Repository } from 'typeorm';
@@ -32,6 +33,7 @@ export class ReportsService {
     @InjectRepository(Report) private readonly reports: Repository<Report>,
     @InjectDataSource() private readonly ds: DataSource,
     private readonly moderation: ModerationService,
+    private readonly listingCache: ListingCacheInvalidator,
   ) {}
 
   async create(reporter: User, dto: CreateReportDto) {
@@ -75,6 +77,7 @@ export class ReportsService {
     if (dto.targetType === 'listing')
       await this.maybeAutoHide(dto.targetId, reporter, dto.reason);
 
+    this.listingCache.viewerChanged(reporter.id);
     // The reporter's own view: returned so the UI can drop the item at once.
     return {
       id: report.id,

@@ -8,6 +8,9 @@ import { UploadsService } from './uploads.service';
 import { Upload } from './entities/upload.entitiy';
 import { getStorageConfig } from './storage.config';
 import { UsersModule } from '../users/user.module';
+import { CloudinaryClient } from './cloudinary.client';
+import { SignedUploadsService } from './signed-uploads.service';
+import { UploadCleanupService } from './upload-cleanup.service';
 
 @Module({
   imports: [
@@ -20,7 +23,12 @@ import { UsersModule } from '../users/user.module';
     UsersModule,
   ],
   controllers: [UploadsController],
-  providers: [UploadsService],
-  exports: [UploadsService],
+  providers: [
+    UploadsService,
+    CloudinaryClient,
+    SignedUploadsService,
+    UploadCleanupService,
+  ],
+  exports: [UploadsService, UploadCleanupService],
 })
 export class UploadsModule {}

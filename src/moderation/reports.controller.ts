@@ -1,3 +1,4 @@
+import { RateLimit } from '../common/rate-limit/rate-limit.decorator';
 import { Body, Controller, Post, UseGuards } from '@nestjs/common';
 import {
   ApiBearerAuth,
@@ -19,6 +20,7 @@ export class ReportsController {
   constructor(private readonly reports: ReportsService) {}
 
   @Post()
+  @RateLimit('reports')
   @ApiOperation({
     summary:
       'Report a listing, user or message. The reported user is never told who reported. The item disappears for the reporter at once.',

@@ -1,3 +1,4 @@
+import { ListingCacheInvalidator } from '../common/cache/listing-cache';
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
@@ -15,6 +16,7 @@ export class BlocksService {
   constructor(
     @InjectRepository(UserBlock) private readonly blocks: Repository<UserBlock>,
     @InjectRepository(User) private readonly users: Repository<User>,
+    private readonly listingCache: ListingCacheInvalidator,
   ) {}
 
   /** Idempotent. Blocking hides both users' listings, chats and messages from each other. */
@@ -31,12 +33,14 @@ export class BlocksService {
       .values({ blockerId, blockedId })
       .orIgnore()
       .execute();
+    this.listingCache.viewerChanged(blockerId, blockedId);
     return { userId: blockedId, blocked: true };
   }
 
   /** Idempotent. */
   async unblock(blockerId: string, blockedId: string): Promise<void> {
     await this.blocks.delete({ blockerId, blockedId });
+    this.listingCache.viewerChanged(blockerId, blockedId);
   }
 
   async list(blockerId: string) {

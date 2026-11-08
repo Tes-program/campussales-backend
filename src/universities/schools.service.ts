@@ -1,4 +1,6 @@
 import { Injectable } from '@nestjs/common';
+import { createHash } from 'crypto';
+import { CACHE_TTL, CacheService, CK } from '../common/cache/cache.service';
 import { InjectRepository } from '@nestjs/typeorm';
 import { isUUID } from 'class-validator';
 import { Repository } from 'typeorm';
@@ -11,8 +13,6 @@ import {
 
 export type PublicSchool = SearchableSchool;
 
-const CACHE_MS = 60_000;
-
 /**
  * "Schools" are the rows of the universities table, seeded from
  * data/schools.json. This service is the read side used by onboarding and
@@ -20,12 +20,20 @@ const CACHE_MS = 60_000;
  */
 @Injectable()
 export class SchoolsService {
-  private cache: { at: number; schools: PublicSchool[] } | null = null;
-
   constructor(
     @InjectRepository(University)
     private readonly universities: Repository<University>,
+    private readonly cache: CacheService,
   ) {}
+
+  /**
+   * Changes whenever the school list changes, so the frontend can keep its
+   * copy (localStorage) and refetch GET /api/schools only on a new version.
+   */
+  async version(): Promise<{ version: string; count: number }> {
+    const { version, schools } = await this.loadAll();
+    return { version, count: schools.length };
+  }
 
   static toPublic(u: University): PublicSchool {
     return {
@@ -64,18 +72,26 @@ export class SchoolsService {
   }
 
   clearCache() {
-    this.cache = null;
+    this.cache.delPrefix(CK.schools);
   }
 
   private async all(): Promise<PublicSchool[]> {
-    if (this.cache && Date.now() - this.cache.at < CACHE_MS)
-      return this.cache.schools;
-    const rows = await this.universities.find({
-      where: { isActive: true },
-      order: { name: 'ASC' },
+    return (await this.loadAll()).schools;
+  }
+
+  /** The seed script runs in another process, so changes show within 10 minutes. */
+  private loadAll(): Promise<{ version: string; schools: PublicSchool[] }> {
+    return this.cache.wrap(`${CK.schools}all`, CACHE_TTL.schools, async () => {
+      const rows = await this.universities.find({
+        where: { isActive: true },
+        order: { name: 'ASC' },
+      });
+      const schools = rows.map((r) => SchoolsService.toPublic(r));
+      const version = createHash('sha1')
+        .update(JSON.stringify(schools))
+        .digest('hex')
+        .slice(0, 12);
+      return { version, schools };
     });
-    const schools = rows.map((r) => SchoolsService.toPublic(r));
-    this.cache = { at: Date.now(), schools };
-    return schools;
   }
 }

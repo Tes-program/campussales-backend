@@ -1,3 +1,4 @@
+import { PublicCache } from '../common/http-cache/http-cache.interceptor';
 import { Controller, Get, Query } from '@nestjs/common';
 import { ApiOperation, ApiQuery, ApiTags } from '@nestjs/swagger';
 import { ValidationFailed } from '../common/errors/app-errors';
@@ -9,6 +10,7 @@ export class SearchController {
   constructor(private readonly search: SearchService) {}
 
   @Get('suggest')
+  @PublicCache(60, 120)
   @ApiOperation({
     summary: 'Up to 8 suggestions (categories, popular titles). Cached 60s.',
   })

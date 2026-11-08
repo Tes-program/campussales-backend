@@ -1,4 +1,5 @@
 // src/categories/categories.controller.ts
+import { PublicCache } from '../common/http-cache/http-cache.interceptor';
 import {
   Controller,
   Get,
@@ -32,6 +33,7 @@ import { UserType } from '../common/enum/user.enums';
 
 @ApiTags('Categories')
 @Controller('categories')
+@PublicCache(300, 600)
 export class CategoriesController {
   private readonly logger = new Logger(CategoriesController.name);
 

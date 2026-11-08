@@ -28,6 +28,9 @@ export enum ErrorCode {
   MODERATION_REJECTED = 'MODERATION_REJECTED',
   /** 403: posting is suspended for this account. */
   ACCOUNT_SUSPENDED = 'ACCOUNT_SUSPENDED',
+  // B5
+  /** 504: the request took longer than 15 seconds. Safe to retry reads. */
+  TIMEOUT = 'TIMEOUT',
 }
 
 export const ERROR_CODE_STATUS: Record<ErrorCode, number> = {
@@ -45,6 +48,7 @@ export const ERROR_CODE_STATUS: Record<ErrorCode, number> = {
   [ErrorCode.BLOCKED]: HttpStatus.FORBIDDEN,
   [ErrorCode.MODERATION_REJECTED]: HttpStatus.BAD_REQUEST,
   [ErrorCode.ACCOUNT_SUSPENDED]: HttpStatus.FORBIDDEN,
+  [ErrorCode.TIMEOUT]: HttpStatus.GATEWAY_TIMEOUT,
 };
 
 /** Maps any HTTP status to the closest contract code. */

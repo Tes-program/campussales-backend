@@ -1,3 +1,4 @@
+import { parseCloudinaryUrl } from '../uploads/cloudinary-url';
 import { Product } from './entities/product.entity';
 import { ProductImage } from './entities/product-image.entity';
 
@@ -40,12 +41,19 @@ export function orderedImages(images: ProductImage[] | undefined) {
       (a, b) =>
         Number(b.isPrimary) - Number(a.isPrimary) || a.sortOrder - b.sortOrder,
     )
-    .map((i) => ({
-      id: i.id,
-      imageUrl: i.imageUrl,
-      isPrimary: i.isPrimary,
-      sortOrder: i.sortOrder,
-    }));
+    .map((i) => {
+      const ref = i.publicId ? i : parseCloudinaryUrl(i.imageUrl);
+      return {
+        id: i.id,
+        imageUrl: i.imageUrl,
+        // Build responsive URLs: res.cloudinary.com/<cloud>/image/upload/
+        // f_auto,q_auto,c_limit,w_<n>/v<version>/<publicId>
+        publicId: ref?.publicId ?? null,
+        version: ref?.version ?? null,
+        isPrimary: i.isPrimary,
+        sortOrder: i.sortOrder,
+      };
+    });
 }
 
 export interface SellerCard {

@@ -126,6 +126,14 @@ export class UpdateMeDto {
   @ValidateNested()
   @Type(() => UpdateMyProfileDto)
   profile?: UpdateMyProfileDto;
+
+  @ApiPropertyOptional({
+    description:
+      'Settings > "Share usage data" (default true). false: product analytics events from this account are dropped.',
+  })
+  @IsOptional()
+  @IsBoolean({ message: 'Choose on or off.' })
+  shareUsageData?: boolean;
 }
 
 /** PATCH /api/users/:id — admin only. */

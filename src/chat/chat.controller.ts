@@ -1,3 +1,4 @@
+import { RateLimit } from '../common/rate-limit/rate-limit.decorator';
 import { EmailVerifiedGuard } from '../auth/guards/email-verified.guard';
 import { conversationView } from './chat-views';
 import {
@@ -49,6 +50,7 @@ export class ChatController {
   // --- Conversations ---
 
   @Post('conversations')
+  @RateLimit('messages')
   @UseGuards(EmailVerifiedGuard)
   @ApiOperation({ summary: 'Create or get existing conversation' })
   @ApiResponse({ status: 201, description: 'Conversation created' })
@@ -163,6 +165,7 @@ export class ChatController {
   }
 
   @Post('conversations/:id/messages')
+  @RateLimit('messages')
   @UseGuards(EmailVerifiedGuard)
   @ApiOperation({ summary: 'Send a message in a conversation' })
   @ApiResponse({ status: 201, description: 'Message sent' })

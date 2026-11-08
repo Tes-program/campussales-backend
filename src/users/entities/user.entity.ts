@@ -116,6 +116,10 @@ export class User {
   @Column({ type: 'timestamp', nullable: true })
   lastActiveAt?: Date | null;
 
+  /** Settings > "Share usage data". Product analytics are dropped when false. */
+  @Column({ type: 'boolean', default: true })
+  shareUsageData: boolean;
+
   /** Computed, exposed on every user object. */
   emailVerified?: boolean;
 

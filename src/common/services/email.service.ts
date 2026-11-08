@@ -1,4 +1,5 @@
 // src/common/services/email.service.ts
+import { metrics, METRIC } from '../observability/metrics';
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import * as nodemailer from 'nodemailer';
@@ -37,7 +38,6 @@ const maskEmail = (email: string) => {
 @Injectable()
 export class EmailService {
   // @types/nodemailer is not installed, so Transporter is untyped here.
-  // eslint-disable-next-line @typescript-eslint/no-redundant-type-constituents
   private transporter: nodemailer.Transporter | undefined;
   private readonly logger = new Logger(EmailService.name);
 
@@ -158,6 +158,7 @@ export class EmailService {
           text: email.text,
         });
         this.logger.log(`Sent ${email.kind} email to ${maskEmail(email.to)}`);
+        metrics.count(METRIC.emailSent);
       } else {
         this.logger.log(
           `[SIMULATED] ${email.kind} email to ${maskEmail(email.to)}`,
@@ -170,6 +171,7 @@ export class EmailService {
         name?: string;
         responseCode?: number;
       };
+      metrics.count(METRIC.emailFailed);
       this.logger.error(
         `Failed to send ${email.kind} email to ${maskEmail(email.to)}: ${e.code ?? e.name ?? 'error'}${e.responseCode ? ` (${e.responseCode})` : ''}`,
       );

@@ -1,4 +1,6 @@
 // src/products/products.service.ts
+import { parseCloudinaryUrl } from '../uploads/cloudinary-url';
+import { ListingCacheInvalidator } from '../common/cache/listing-cache';
 import { Injectable, Logger } from '@nestjs/common';
 import { InjectDataSource, InjectRepository } from '@nestjs/typeorm';
 import { plainToInstance } from 'class-transformer';
@@ -57,6 +59,7 @@ export class ProductsService {
     private readonly notificationsService: NotificationsService,
     private readonly search: SearchService,
     private readonly moderation: ModerationService,
+    private readonly listingCache: ListingCacheInvalidator,
   ) {}
 
   // ─── WRITES ──────────────────────────────────────────────────
@@ -102,7 +105,7 @@ export class ProductsService {
       return saved.id;
     });
     this.search.markDirty();
-    return this.loadForResponse(id);
+    return this.afterWrite(id);
   }
 
   async update(
@@ -120,7 +123,7 @@ export class ProductsService {
       return this.applyEdits(manager, product, dto);
     });
     if (priceDrop) this.firePriceDrop(product.id, product.title, priceDrop);
-    return this.loadForResponse(id);
+    return this.afterWrite(id);
   }
 
   /** Soft delete. Sold items can be deleted too. */
@@ -133,7 +136,7 @@ export class ProductsService {
       product.sellerId,
       'deleted',
     );
-    return this.loadForResponse(id, { withDeleted: true });
+    return this.afterWrite(id, { withDeleted: true });
   }
 
   /** Idempotent. */
@@ -149,7 +152,7 @@ export class ProductsService {
         'sold',
       );
     }
-    return this.loadForResponse(id);
+    return this.afterWrite(id);
   }
 
   /** Idempotent. Sold, inactive and needs_review items are left as they are. */
@@ -159,7 +162,7 @@ export class ProductsService {
       applyStatus(product, ProductStatus.INACTIVE);
       await this.productsRepository.save(product);
     }
-    return this.loadForResponse(id);
+    return this.afterWrite(id);
   }
 
   /**
@@ -168,8 +171,7 @@ export class ProductsService {
    */
   async activate(id: string, userId: string): Promise<Product> {
     const product = await this.findOwnedForWrite(id, userId);
-    if (product.status === ProductStatus.ACTIVE)
-      return this.loadForResponse(id);
+    if (product.status === ProductStatus.ACTIVE) return this.afterWrite(id);
     if (product.status === ProductStatus.SOLD) {
       throw conflict(MSG.productSoldActivate);
     }
@@ -177,7 +179,7 @@ export class ProductsService {
     await this.assertListable(product);
     applyStatus(product, ProductStatus.ACTIVE);
     await this.productsRepository.save(product);
-    return this.loadForResponse(id);
+    return this.afterWrite(id);
   }
 
   /** Legacy PATCH /:id/unavailable — toggles active/inactive. */
@@ -185,7 +187,7 @@ export class ProductsService {
     const product = await this.findOwnedForWrite(id, userId);
     if (product.status === ProductStatus.ACTIVE)
       return this.deactivate(id, userId);
-    if (product.status === ProductStatus.SOLD) return this.loadForResponse(id);
+    if (product.status === ProductStatus.SOLD) return this.afterWrite(id);
     return this.activate(id, userId);
   }
 
@@ -228,7 +230,7 @@ export class ProductsService {
       return drop;
     });
     if (priceDrop) this.firePriceDrop(product.id, product.title, priceDrop);
-    return this.loadForResponse(id);
+    return this.afterWrite(id);
   }
 
   // ─── READS ───────────────────────────────────────────────────
@@ -530,6 +532,15 @@ export class ProductsService {
   }
 
   /** The object every write returns, so the UI never has to refetch. */
+  /** Every listing write: drop cached public reads, then return the fresh row. */
+  private afterWrite(
+    id: string,
+    opts?: Parameters<ProductsService['loadForResponse']>[1],
+  ): Promise<Product> {
+    this.listingCache.productChanged(id);
+    return this.loadForResponse(id, opts);
+  }
+
   private async loadForResponse(
     id: string,
     opts: { withDeleted?: boolean } = {},
@@ -598,14 +609,17 @@ export class ProductsService {
     urls: string[],
   ): Promise<ProductImage[]> {
     await manager.delete(ProductImage, { productId });
-    const images = urls.map((imageUrl, index) =>
-      manager.create(ProductImage, {
+    const images = urls.map((imageUrl, index) => {
+      const ref = parseCloudinaryUrl(imageUrl);
+      return manager.create(ProductImage, {
         productId,
         imageUrl,
+        publicId: ref?.publicId ?? null,
+        version: ref?.version ?? null,
         isPrimary: index === 0,
         sortOrder: index,
-      }),
-    );
+      });
+    });
     return manager.save(images);
   }
 

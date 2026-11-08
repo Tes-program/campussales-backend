@@ -1,3 +1,4 @@
+import { ListingCacheInvalidator } from '../common/cache/listing-cache';
 import { Injectable } from '@nestjs/common';
 import { InjectDataSource } from '@nestjs/typeorm';
 import { DataSource } from 'typeorm';
@@ -12,6 +13,7 @@ export class PrivacyService {
   constructor(
     @InjectDataSource() private readonly ds: DataSource,
     private readonly rateLimit: RateLimitService,
+    private readonly listingCache: ListingCacheInvalidator,
   ) {}
 
   /**
@@ -30,25 +32,36 @@ export class PrivacyService {
         limit.retryAfterSeconds,
       );
     const q = <T>(sql: string) => this.ds.query<T[]>(sql, [user.id]);
-    const [listings, wishlist, messages, reports, notifications, blocks] =
-      await Promise.all([
-        q(
-          `SELECT id, title, description, price, condition, quantity, status, tags, "createdAt", "updatedAt", "deletedAt" FROM products WHERE "sellerId" = $1`,
-        ),
-        q(`SELECT "productId", "createdAt" FROM wishlists WHERE "userId" = $1`),
-        q(
-          `SELECT id, "conversationId", content, type, "createdAt" FROM messages WHERE "senderId" = $1 AND type <> 'system'`,
-        ),
-        q(
-          `SELECT id, "targetType", "targetId", reason, details, status, "createdAt" FROM reports WHERE "reporterId" = $1`,
-        ),
-        q(
-          `SELECT id, type, title, body, "isRead", "createdAt" FROM notifications WHERE "userId" = $1`,
-        ),
-        q(
-          `SELECT "blockedId", "createdAt" FROM user_blocks WHERE "blockerId" = $1`,
-        ),
-      ]);
+    const [
+      listings,
+      wishlist,
+      messages,
+      reports,
+      notifications,
+      blocks,
+      usageEvents,
+    ] = await Promise.all([
+      q(
+        `SELECT id, title, description, price, condition, quantity, status, tags, "createdAt", "updatedAt", "deletedAt" FROM products WHERE "sellerId" = $1`,
+      ),
+      q(`SELECT "productId", "createdAt" FROM wishlists WHERE "userId" = $1`),
+      q(
+        `SELECT id, "conversationId", content, type, "createdAt" FROM messages WHERE "senderId" = $1 AND type <> 'system'`,
+      ),
+      q(
+        `SELECT id, "targetType", "targetId", reason, details, status, "createdAt" FROM reports WHERE "reporterId" = $1`,
+      ),
+      q(
+        `SELECT id, type, title, body, "isRead", "createdAt" FROM notifications WHERE "userId" = $1`,
+      ),
+      q(
+        `SELECT "blockedId", "createdAt" FROM user_blocks WHERE "blockerId" = $1`,
+      ),
+      // Product analytics linked to the account (B5); most recent 5,000.
+      q(
+        `SELECT name, "occurredAt", props FROM analytics_events WHERE "userId" = $1 ORDER BY id DESC LIMIT 5000`,
+      ),
+    ]);
     return {
       exportedAt: new Date().toISOString(),
       account: toPublicUser(user),
@@ -58,6 +71,7 @@ export class PrivacyService {
       reportsFiled: reports,
       notifications,
       blockedUsers: blocks,
+      usageEvents,
     };
   }
 
@@ -79,6 +93,7 @@ export class PrivacyService {
         [user.id],
       );
     });
+    this.listingCache.allListingsChanged();
     const deleteAfter = new Date(
       Date.now() + ACCOUNT_DELETION_GRACE_DAYS * 86_400_000,
     );

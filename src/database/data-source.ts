@@ -16,6 +16,9 @@ export const AppDataSource = new DataSource({
   database: configService.get('DATABASE_NAME') || 'campussales',
   entities: [__dirname + '/../**/*.entity{.ts,.js}'],
   migrations: [__dirname + '/migrations/*{.ts,.js}'],
+  // Each migration in its own transaction, so a migration can opt out
+  // (CREATE INDEX CONCURRENTLY) with `transaction = false`.
+  migrationsTransactionMode: 'each',
   synchronize: false, // Always false for production
   logging: configService.get('NODE_ENV') === 'development',
   ssl:

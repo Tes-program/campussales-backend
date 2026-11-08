@@ -348,7 +348,15 @@ build starts serving.
    off), `ADMIN_ALERT_EMAIL` and optionally `APPEAL_EMAIL`. Then
    `npm run fix:data -- --screening` (dry run) and, after review,
    `--apply --screening --confirm-host=<host>`.
-10. Local development uses TypeORM `synchronize`, which drops indexes it
+10. B5: run migrations (`B5PerformanceAnalytics` is additive;
+    `B5ForeignKeyIndexes` builds indexes `CONCURRENTLY`, outside a
+    transaction, so writes keep flowing). Set the env vars in
+    docs/infra.md §3 (at least `LOG_HASH_SALT`, `ALERT_WEBHOOK_URL` or
+    `ALERT_EMAIL`, `CLOUDINARY_API_KEY/SECRET`), point Railway's health check
+    at `/health/ready`, and leave `UPLOAD_CLEANUP_MODE` unset (dry run) until
+    a week of dry-run logs has been reviewed. Region moves are manual: see
+    docs/infra.md §2.
+11. Local development uses TypeORM `synchronize`, which drops indexes it
     doesn't know about (the search indexes). Prefer running migrations locally
     too (`NODE_ENV=test`) or switch `synchronize` off.
 
@@ -625,5 +633,72 @@ Messaging or starting a chat with a blocked user (either direction): **403
 | Wishlist `data` | `items` |
 | Notification `text`, `isRead`, `metadata`; `PATCH /notifications/read-all`, `PATCH /notifications/:id/read` | `body`, `readAt`, `link`; `POST` routes |
 | `DELETE /users/me` (instant deactivation) | `DELETE /me/account` |
-| Notification `text`, `isRead`, `metadata`; `PATCH /notifications/read-all`, `PATCH /notifications/:id/read` | `body`, `readAt`, `link`; `POST` routes |
-| `DELETE /users/me` (instant deactivation) | `DELETE /me/account` |
+
+## 12. Performance, bootstrap, uploads, analytics, health (B5)
+
+### Bootstrap (frontend F5, behind its own flag; old endpoints unchanged)
+
+| Method & path | Auth | Returns |
+| --- | --- | --- |
+| `GET /api/bootstrap` | Bearer (401 → refresh and retry) | `{ user, counts: { unreadNotifications, unreadMessages }, wishlist: { productIds }, categories: [{ id, slug, name, iconUrl, count }], schools: { version, count }, flags, config: { cloudinaryCloudName, uploads }, feed: { source: "personal", items, nextCursor }, generatedAt }` |
+| `GET /api/bootstrap/public` | none | same with `user`, `counts`, `wishlist` = `null` and `feed.source = "latest"`; `Cache-Control: public, max-age=30` |
+
+- `feed.items` holds the first 12 cards; page on with `GET /api/feed?cursor=<nextCursor>`
+  (logged in) or `GET /api/products?cursor=` (public). Responses stay under 50 KB.
+- `schools.version` changes when the school list changes: keep the list in
+  local storage and refetch `GET /api/schools` only when the version differs.
+- `flags` (`bootstrap`, `signedUploads`, `analytics`, `searchSuggestions`) come
+  from defaults overridden by the `FEATURE_FLAGS` env var (JSON).
+
+### Signed direct uploads (photos never pass through the API)
+
+1. `POST /api/uploads/sign` `{ kind?: "product" | "avatar", count?: 1..5 }` →
+   `{ uploads: [{ uploadId, publicId, uploadUrl, fields, expiresAt }], maxBytes, formats }`.
+2. **Check `file.size <= maxBytes` (3 MB) on the phone first**, then
+   `POST uploadUrl` as `multipart/form-data` with `file` plus **every** key in
+   `fields`, unchanged (they are signed; changing one makes Cloudinary refuse).
+3. `POST /api/uploads/complete` `{ uploadId, publicId, version, signature }`
+   using `public_id`, `version`, `signature` from Cloudinary's response →
+   `{ id, publicId, version, url, width, height, size, responsive: { thumb, card, full } }`.
+4. Put `url` in the listing's `images` as before.
+
+Over 3 MB → `400 VALIDATION_FAILED`, `fields.image = "This photo is over 3 MB…"`
+(the legacy multipart routes answer `413` with the same shape). Cards and
+items now include `publicId` and `version` per image; build responsive URLs as
+`https://res.cloudinary.com/<cloud>/image/upload/f_auto,q_auto,c_limit,w_<n>/v<version>/<publicId>`
+(`config.cloudinaryCloudName` in bootstrap). `imageUrl` is unchanged.
+
+### Product analytics
+
+`POST /api/events` `{ events: [{ name, ts, anonId, props }] }` (or a bare
+array), at most 20 per call, optional Bearer token → **204** immediately.
+
+- `name` is one of: landing_view, signup_start, signup_complete,
+  onboarding_step_view, onboarding_step_complete, onboarding_error, feed_view,
+  search, search_zero_results, filter_change, item_view, message_start,
+  wishlist_add, sell_open, photo_added, post_error, post_success, report_open,
+  report_submit, block_user, share_click.
+- `props` keys: screen, source, referrer, section, position, page, variant,
+  step, field, errorCode, method, itemId, productId, sellerId, category,
+  condition, campusId, sort, filter, value, query, resultCount, priceBucket,
+  photoCount, hasDidYouMean, reason, targetType, channel, durationMs, network.
+  Values: text up to 60 characters, numbers, true/false, null.
+- `400 VALIDATION_FAILED` (whole batch) for unknown names or keys, emails,
+  phone numbers, long text, nested values, timestamps older than 7 days.
+- `anonId`: random id the client generates once and keeps (8–64 of
+  `A-Z a-z 0-9 - _`). Never derive it from the user, device or email.
+- Dropped silently (still 204) with `DNT: 1` / `Sec-GPC: 1`, or when the user
+  turned off **Share usage data** (`PATCH /api/users/me { "shareUsageData": false }`;
+  default on; returned on `/auth/me`).
+
+### Health, caching, limits, timing
+
+| What | Contract |
+| --- | --- |
+| `GET /health` | liveness, no I/O (outside `/api`) |
+| `GET /health/ready` | `200` when the database answers within 2 s, `503` otherwise or while shutting down |
+| Cache-Control | public anonymous GETs (`/products`, `/products/:id`, `/products/:id/similar`, `/categories`, `/schools`, `/search/suggest`, `/bootstrap/public`): `public, max-age=…, stale-while-revalidate=…` + ETag (send `If-None-Match` for a `304`). Everything else and every logged-in response: `private, no-store`. Errors: `no-store`. |
+| Rate limits | every route: 120 requests/min per client (IP + token); auth 30, uploads 30, events 60, reports 10, messages 40. Over the limit: `429 RATE_LIMITED` + `Retry-After`. Login/reset limits from B2 still apply on top. Headers `X-RateLimit-Limit` / `-Remaining`. |
+| Timeouts | 15 s per request → `504` `{ error: { code: "TIMEOUT" } }` |
+| Server-Timing | outside production: `db;dur=…;desc="N queries", app;dur=…, total;dur=…` (visible in DevTools → Network → Timing) |
+| Admin | `GET /api/admin/metrics` (per-route p50/p95/p99, pool, cache), `POST /api/admin/uploads/cleanup?dryRun=true`, `POST /api/admin/alerts/test` |

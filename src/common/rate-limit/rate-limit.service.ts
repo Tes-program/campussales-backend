@@ -19,6 +19,7 @@ export class RateLimitService implements OnModuleDestroy {
   private redis: Redis | null = null;
   private redisDown = false;
   private readonly memory = new Map<string, number[]>();
+  private readonly fixed = new Map<string, number>();
 
   constructor(config: ConfigService) {
     this.prefix = `cs:${config.get('NODE_ENV') || 'development'}:rl:`;
@@ -95,6 +96,55 @@ export class RateLimitService implements OnModuleDestroy {
       }
     }
     return this.prune(k, windowMs, now);
+  }
+
+  /**
+   * Fixed-window counter: one Redis round trip (INCR + PEXPIRE). Used by the
+   * global per-minute limiter, where the sliding window's precision isn't
+   * worth a second round trip on every request.
+   */
+  async fixedWindow(
+    key: string,
+    limit: number,
+    windowMs: number,
+  ): Promise<{ allowed: boolean; count: number; retryAfterSeconds: number }> {
+    const now = Date.now();
+    const windowStart = Math.floor(now / windowMs) * windowMs;
+    const k = `${this.prefix}${key}:${windowStart}`;
+    const retryAfterSeconds = Math.max(
+      1,
+      Math.ceil((windowStart + windowMs - now) / 1000),
+    );
+    let count: number | null = null;
+    if (this.useRedis()) {
+      try {
+        const res = await this.redis!.multi()
+          .incr(k)
+          .pexpire(k, windowMs)
+          .exec();
+        count = Number(res?.[0]?.[1] ?? 0);
+      } catch {
+        this.redisDown = true;
+      }
+    }
+    if (count === null) {
+      const entry = this.fixed.get(k);
+      count = (entry ?? 0) + 1;
+      this.fixed.set(k, count);
+      if (this.fixed.size > 50_000) this.pruneFixed(now, windowMs);
+    }
+    return { allowed: count <= limit, count, retryAfterSeconds };
+  }
+
+  redisHealthy(): boolean {
+    return this.useRedis();
+  }
+
+  private pruneFixed(now: number, windowMs: number) {
+    for (const k of this.fixed.keys()) {
+      const start = Number(k.slice(k.lastIndexOf(':') + 1));
+      if (start + windowMs < now) this.fixed.delete(k);
+    }
   }
 
   async reset(key: string): Promise<void> {

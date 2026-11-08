@@ -167,6 +167,8 @@ export class UsersService {
       user.phoneNumber = dto.phone || null;
     }
 
+    if ('shareUsageData' in dto && typeof dto.shareUsageData === 'boolean')
+      user.shareUsageData = dto.shareUsageData;
     if ('userType' in dto && dto.userType) user.userType = dto.userType;
     if ('status' in dto && dto.status) user.status = dto.status;
     if ('isActive' in dto && dto.isActive !== undefined)

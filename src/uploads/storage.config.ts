@@ -4,7 +4,8 @@ import { v2 as cloudinary } from 'cloudinary';
 import { CloudinaryStorage } from 'multer-storage-cloudinary';
 import { ConfigService } from '@nestjs/config';
 import { MulterModuleOptions } from '@nestjs/platform-express';
-import { BadRequestException } from '@nestjs/common';
+import { ValidationFailed } from '../common/errors/app-errors';
+import { UPLOAD_RULES } from './upload-rules';
 import { extname } from 'path';
 import { existsSync, mkdirSync } from 'fs';
 
@@ -15,17 +16,11 @@ export const getStorageConfig = (
 
   // Common file filter
   const fileFilter = (req: any, file: any, cb: any) => {
-    const allowedMimeTypes = [
-      'image/jpeg',
-      'image/jpg',
-      'image/png',
-      'image/webp',
-    ];
-
-    if (!allowedMimeTypes.includes(file.mimetype)) {
+    if (!UPLOAD_RULES.mimeTypes.includes(file.mimetype)) {
       cb(
-        new BadRequestException(
-          'Only image files (JPEG, PNG, WebP) are allowed',
+        new ValidationFailed(
+          { images: 'Use a JPG, PNG, WebP or HEIC photo.' },
+          'Use a JPG, PNG, WebP or HEIC photo.',
         ),
         false,
       );
@@ -35,7 +30,7 @@ export const getStorageConfig = (
   };
 
   const limits = {
-    fileSize: 5 * 1024 * 1024, // 5MB
+    fileSize: UPLOAD_RULES.maxBytes, // 3 MB (B5)
     files: 5, // Max 5 files per upload
   };
 
@@ -56,7 +51,12 @@ export const getStorageConfig = (
             allowed_formats: ['jpg', 'jpeg', 'png', 'webp'],
             public_id: `${Date.now()}-${file.originalname.split('.')[0]}`,
             transformation: [
-              { width: 1200, height: 1200, crop: 'limit', quality: 'auto' },
+              {
+                width: UPLOAD_RULES.maxWidth,
+                height: UPLOAD_RULES.maxWidth,
+                crop: 'limit',
+                quality: 'auto:good',
+              },
             ],
           };
         },

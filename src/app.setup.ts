@@ -1,13 +1,14 @@
 import { INestApplication } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { Reflector } from '@nestjs/core';
 import helmet from 'helmet';
 import compression from 'compression';
 import { HttpExceptionFilter } from './common/filters/http-exception.filter';
-import { LoggingInterceptor } from './common/interceptors/logging.interceptor';
 import { TimeoutInterceptor } from './common/interceptors/timeout.interceptor';
 import { SanitizeInterceptor } from './common/interceptors/sanitize.interceptor';
 import { requestIdMiddleware } from './common/middleware/request-id.middleware';
-import { queryCountMiddleware } from './common/query-count';
+import { timingMiddleware } from './common/observability/timing.middleware';
+import { HttpCacheInterceptor } from './common/http-cache/http-cache.interceptor';
 import { createValidationPipe } from './common/validation/validation-errors';
 
 /**
@@ -17,19 +18,23 @@ import { createValidationPipe } from './common/validation/validation-errors';
 export function configureApp(app: INestApplication): void {
   const configService = app.get(ConfigService);
 
+  const reflector = app.get(Reflector);
+
   // Must be first so every response, including guard/pipe failures, has an id.
   app.use(requestIdMiddleware);
-  app.use(queryCountMiddleware);
+  // Timing log, metrics, Server-Timing (non-production), query counts.
+  app.use(timingMiddleware);
 
   app.useGlobalFilters(new HttpExceptionFilter());
   app.useGlobalInterceptors(
-    new LoggingInterceptor(),
-    new TimeoutInterceptor(),
+    new TimeoutInterceptor(reflector),
+    new HttpCacheInterceptor(reflector),
     new SanitizeInterceptor(),
   );
 
   app.use(helmet({ crossOriginResourcePolicy: { policy: 'cross-origin' } }));
-  app.use(compression());
+  // br (quality 4) or gzip for anything over 1 KB.
+  app.use(compression({ threshold: 1024 }));
 
   const isProd = configService.get('NODE_ENV') === 'production';
 
@@ -63,10 +68,19 @@ export function configureApp(app: INestApplication): void {
   app.enableCors({
     origin: [...new Set([...configured, ...devOrigins])],
     credentials: true,
-    exposedHeaders: ['X-Request-Id', 'Retry-After', 'ETag'],
+    exposedHeaders: [
+      'X-Request-Id',
+      'Retry-After',
+      'ETag',
+      'Server-Timing',
+      'X-Query-Count',
+    ],
   });
 
   app.useGlobalPipes(createValidationPipe());
-  // /share/* serves link-preview HTML at the root, outside /api.
-  app.setGlobalPrefix('api', { exclude: ['share', 'share/(.*)'] });
+  // /share/* serves link-preview HTML and /health* serves the host's health
+  // checks at the root, outside /api.
+  app.setGlobalPrefix('api', {
+    exclude: ['share', 'share/(.*)', 'health', 'health/ready'],
+  });
 }

@@ -1,3 +1,4 @@
+import { ListingCacheInvalidator } from '../common/cache/listing-cache';
 import {
   Injectable,
   Logger,
@@ -30,6 +31,7 @@ export class MaintenanceService implements OnModuleInit, OnModuleDestroy {
     private readonly rateLimit: RateLimitService,
     private readonly email: EmailService,
     private readonly config: ConfigService,
+    private readonly listingCache: ListingCacheInvalidator,
   ) {}
 
   onModuleInit() {
@@ -139,13 +141,24 @@ export class MaintenanceService implements OnModuleInit, OnModuleDestroy {
           'password_resets',
           'email_verifications',
           'product_drafts',
-          'uploads',
         ]) {
           const col = t === 'product_drafts' ? 'sellerId' : 'userId';
           await m
             .query(`DELETE FROM "${t}" WHERE "${col}" = $1`, [id])
             .catch(() => undefined);
         }
+        // Upload rows stay (without the original file name) so the orphan
+        // clean-up job can delete the files from Cloudinary; nothing
+        // references them any more, so they go on its next run.
+        await m.query(
+          `UPDATE "uploads" SET "originalName" = 'deleted' WHERE "userId" = $1`,
+          [id],
+        );
+        // Product analytics keep counting the events, but no longer link them to the person.
+        await m.query(
+          `UPDATE "analytics_events" SET "userId" = NULL WHERE "userId" = $1`,
+          [id],
+        );
         await m.query(
           `DELETE FROM "user_blocks" WHERE "blockerId" = $1 OR "blockedId" = $1`,
           [id],
@@ -162,6 +175,7 @@ export class MaintenanceService implements OnModuleInit, OnModuleDestroy {
         );
       });
     }
+    if (users.length) this.listingCache.allListingsChanged();
     return users.length;
   }
 }

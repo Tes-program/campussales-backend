@@ -1,4 +1,5 @@
 // src/products/products.controller.ts
+import { PublicCache } from '../common/http-cache/http-cache.interceptor';
 import {
   Controller,
   Get,
@@ -71,6 +72,7 @@ export class ProductsController {
 
   @Get()
   @UseGuards(OptionalJwtAuthGuard)
+  @PublicCache(30, 60)
   @ApiOperation({
     summary:
       'List and search listings. Public. Cursor pagination; legacy page/search/categoryId params still work.',
@@ -315,13 +317,18 @@ export class ProductsController {
         'ETag',
         `W/"${createHash('sha1').update(JSON.stringify(stable)).digest('base64url')}"`,
       );
-      res.setHeader('Cache-Control', 'public, max-age=60');
+      res.setHeader(
+        'Cache-Control',
+        'public, max-age=30, stale-while-revalidate=60',
+      );
+      res.setHeader('Vary', 'Authorization, Accept-Encoding');
     }
     return item;
   }
 
   @Get(':id/similar')
   @UseGuards(OptionalJwtAuthGuard)
+  @PublicCache(60, 120)
   @ApiOperation({
     summary: 'Similar items: same category, same campus first, 50-200% price.',
   })

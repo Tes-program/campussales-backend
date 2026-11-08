@@ -15,7 +15,12 @@ import {
   HttpCode,
   HttpStatus,
   BadRequestException,
+  Body,
 } from '@nestjs/common';
+import { RateLimit } from '../common/rate-limit/rate-limit.decorator';
+import { RequestTimeout } from '../common/interceptors/timeout.interceptor';
+import { SignedUploadsService } from './signed-uploads.service';
+import { CompleteUploadDto, SignUploadDto } from './dto/signed-upload.dto';
 import {
   ApiTags,
   ApiOperation,
@@ -39,12 +44,41 @@ import {
 @Controller('uploads')
 @UseGuards(JwtAuthGuard)
 @ApiBearerAuth()
+@RateLimit('uploads')
 export class UploadsController {
   private readonly logger = new Logger(UploadsController.name);
 
-  constructor(private readonly uploadsService: UploadsService) {}
+  constructor(
+    private readonly uploadsService: UploadsService,
+    private readonly signed: SignedUploadsService,
+  ) {}
+
+  @Post('sign')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary:
+      'Signed direct-to-Cloudinary upload: returns uploadUrl + fields to POST with the file. Limited to our folder, image formats, 3 MB.',
+  })
+  sign(@CurrentUser() user: User, @Body() dto: SignUploadDto) {
+    return this.signed.sign(user.id, dto.kind ?? 'product', dto.count ?? 1);
+  }
+
+  @Post('complete')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary:
+      'Confirm a direct upload with Cloudinary’s response (public_id, version, signature). Returns publicId, version, url and responsive URLs.',
+  })
+  @ApiResponse({
+    status: 400,
+    description: 'VALIDATION_FAILED (too large, wrong format, bad signature)',
+  })
+  complete(@CurrentUser() user: User, @Body() dto: CompleteUploadDto) {
+    return this.signed.complete(user.id, dto);
+  }
 
   @Post('product-images')
+  @RequestTimeout(60_000)
   @UseInterceptors(FilesInterceptor('images', 5))
   @ApiOperation({ summary: 'Upload product images (max 5)' })
   @ApiConsumes('multipart/form-data')
@@ -97,6 +131,7 @@ export class UploadsController {
   }
 
   @Post('avatar')
+  @RequestTimeout(60_000)
   @UseInterceptors(FileInterceptor('avatar'))
   @ApiOperation({ summary: 'Upload profile avatar' })
   @ApiConsumes('multipart/form-data')

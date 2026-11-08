@@ -30,3 +30,7 @@ export function assertSafeTestDatabase() {
     );
   }
 }
+// B5: tests make hundreds of requests from one IP; rate-limit tests lower this.
+process.env.RATE_LIMIT_SCALE = process.env.RATE_LIMIT_SCALE || '1000';
+process.env.CLOUDINARY_API_KEY = 'test-key';
+process.env.CLOUDINARY_API_SECRET = 'test-secret';

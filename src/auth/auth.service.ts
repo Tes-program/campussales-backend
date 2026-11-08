@@ -2,7 +2,10 @@ import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import { InjectRepository } from '@nestjs/typeorm';
-import * as bcrypt from 'bcryptjs';
+// Native bcrypt: hashing runs on libuv's thread pool, not the event loop
+// (bcryptjs blocked every other request for ~300 ms per login). Same
+// $2b$ hashes, same cost; existing bcryptjs hashes verify unchanged.
+import * as bcrypt from 'bcrypt';
 import { randomBytes, randomInt } from 'crypto';
 import { IsNull, Repository } from 'typeorm';
 import {

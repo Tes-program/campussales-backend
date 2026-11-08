@@ -23,6 +23,8 @@ export const DEFAULT_MESSAGES: Record<ErrorCode, string> = {
   [ErrorCode.MODERATION_REJECTED]: "This listing can't be posted.",
   [ErrorCode.ACCOUNT_SUSPENDED]:
     'Posting is paused on your account. Check your email for details.',
+  [ErrorCode.TIMEOUT]:
+    'This is taking longer than it should. Please check your connection and try again.',
   [ErrorCode.SERVER_ERROR]:
     'Something went wrong on our side. Please try again in a moment.',
 };

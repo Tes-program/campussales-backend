@@ -10,5 +10,6 @@ import { MeController } from './me.controller';
   imports: [ProductsModule, TypeOrmModule.forFeature([UserProfile])],
   controllers: [FeedController, MeController],
   providers: [FeedService],
+  exports: [FeedService],
 })
 export class FeedModule {}

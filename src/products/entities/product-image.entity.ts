@@ -16,8 +16,16 @@ export class ProductImage {
   @Column()
   productId: string;
 
+  /** Full URL, kept for older clients. */
   @Column()
   imageUrl: string;
+
+  /** Cloudinary public id + version (parsed from the URL) for responsive URLs. */
+  @Column({ type: 'varchar', length: 255, nullable: true })
+  publicId?: string | null;
+
+  @Column({ type: 'int', nullable: true })
+  version?: number | null;
 
   @Column({ default: false })
   isPrimary: boolean;

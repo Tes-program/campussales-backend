@@ -1,3 +1,4 @@
+import { PublicCache } from '../common/http-cache/http-cache.interceptor';
 import { Controller, Get, Query } from '@nestjs/common';
 import { ApiOperation, ApiQuery, ApiResponse, ApiTags } from '@nestjs/swagger';
 import { IsOptional } from 'class-validator';
@@ -28,6 +29,7 @@ export class SchoolsController {
   constructor(private readonly schools: SchoolsService) {}
 
   @Get()
+  @PublicCache(600, 3600)
   @ApiOperation({
     summary: `Search schools (typo-tolerant, case-insensitive). Max ${SCHOOL_SEARCH_LIMIT} results.`,
   })

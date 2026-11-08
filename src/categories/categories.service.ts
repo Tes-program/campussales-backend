@@ -10,13 +10,56 @@ import { Repository } from 'typeorm';
 import { Category } from '../products/entities/category.entity';
 import { CreateCategoryDto } from './dto/create-category.dto';
 import { UpdateCategoryDto } from './dto/update-category.dto';
+import { CACHE_TTL, CacheService, CK } from '../common/cache/cache.service';
+import { ListingCacheInvalidator } from '../common/cache/listing-cache';
+
+export interface CategoryWithCount {
+  id: string;
+  slug: string;
+  name: string;
+  iconUrl: string | null;
+  count: number;
+}
 
 @Injectable()
 export class CategoriesService {
   constructor(
     @InjectRepository(Category)
     private categoriesRepository: Repository<Category>,
+    private readonly cache: CacheService,
+    private readonly invalidator: ListingCacheInvalidator,
   ) {}
+
+  /**
+   * Active categories with the number of live listings in each (one
+   * grouped query, cached 60 s; invalidated by listing writes).
+   */
+  async listWithCounts(): Promise<CategoryWithCount[]> {
+    return this.cache.wrap(
+      `${CK.categories}counts`,
+      CACHE_TTL.categoryCounts,
+      async () => {
+        const rows = await this.categoriesRepository.query(
+          `SELECT c."id", c."slug", c."name", c."iconUrl",
+                  count(p."id")::int AS "count"
+             FROM "categories" c
+             LEFT JOIN "products" p
+               ON p."categoryId" = c."id" AND p."status" = 'active'
+              AND p."deletedAt" IS NULL AND p."moderationStatus" = 'approved'
+            WHERE c."isActive" = true
+            GROUP BY c."id"
+            ORDER BY c."name" ASC`,
+        );
+        return (rows as CategoryWithCount[]).map((r) => ({
+          id: r.id,
+          slug: r.slug,
+          name: r.name,
+          iconUrl: r.iconUrl ?? null,
+          count: Number(r.count),
+        }));
+      },
+    );
+  }
 
   /**
    * Create a new category
@@ -29,7 +72,9 @@ export class CategoriesService {
     }
 
     const category = this.categoriesRepository.create(createCategoryDto);
-    return await this.categoriesRepository.save(category);
+    const saved = await this.categoriesRepository.save(category);
+    this.invalidator.categoriesChanged();
+    return saved;
   }
 
   /**
@@ -37,21 +82,22 @@ export class CategoriesService {
    */
   async findAll(includeInactive: boolean = false): Promise<Category[]> {
     const whereCondition = includeInactive ? {} : { isActive: true };
-
-    return await this.categoriesRepository.find({
-      where: whereCondition,
-      order: { name: 'ASC' },
-    });
+    return this.cache.wrap(
+      `${CK.categories}all:${includeInactive}`,
+      CACHE_TTL.categories,
+      () =>
+        this.categoriesRepository.find({
+          where: whereCondition,
+          order: { name: 'ASC' },
+        }),
+    );
   }
 
   /**
    * Get active categories only (for public display)
    */
   async findActive(): Promise<Category[]> {
-    return await this.categoriesRepository.find({
-      where: { isActive: true },
-      order: { name: 'ASC' },
-    });
+    return this.findAll(false);
   }
 
   /**
@@ -111,7 +157,9 @@ export class CategoriesService {
     }
 
     Object.assign(category, updateCategoryDto);
-    return await this.categoriesRepository.save(category);
+    const saved = await this.categoriesRepository.save(category);
+    this.invalidator.categoriesChanged();
+    return saved;
   }
 
   /**
@@ -121,6 +169,7 @@ export class CategoriesService {
     const category = await this.findOne(id);
     category.isActive = false;
     await this.categoriesRepository.save(category);
+    this.invalidator.categoriesChanged();
   }
 
   /**
@@ -143,6 +192,7 @@ export class CategoriesService {
     }
 
     await this.categoriesRepository.remove(category);
+    this.invalidator.categoriesChanged();
   }
 
   /**
@@ -208,7 +258,7 @@ export class CategoriesService {
         )
         .orderBy('category.name', 'ASC')
         .getMany();
-    } catch (error) {
+    } catch {
       throw new NotFoundException('Failed to search categories');
     }
   }
@@ -219,7 +269,9 @@ export class CategoriesService {
   async toggleActive(id: string): Promise<Category> {
     const category = await this.findOne(id);
     category.isActive = !category.isActive;
-    return await this.categoriesRepository.save(category);
+    const saved = await this.categoriesRepository.save(category);
+    this.invalidator.categoriesChanged();
+    return saved;
   }
 
   /**

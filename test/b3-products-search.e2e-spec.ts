@@ -170,7 +170,9 @@ describe('B3 products, search and feed (e2e)', () => {
       expect(res.body.seller.email).toBeUndefined();
       expect(res.body.seller.phoneNumber).toBeUndefined();
       expect(res.body.isOwner).toBeUndefined();
-      expect(res.headers['cache-control']).toBe('public, max-age=60');
+      expect(res.headers['cache-control']).toBe(
+        'public, max-age=30, stale-while-revalidate=60',
+      );
       expect(res.headers.etag).toBeTruthy();
 
       const again = await http()
