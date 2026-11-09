@@ -4,7 +4,7 @@ import {
   ConflictException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { In, Not, Raw, Repository } from 'typeorm';
+import { In, Not, QueryFailedError, Raw, Repository } from 'typeorm';
 import { User } from './entities/user.entity';
 import { UserProfile } from './entities/user-profile.entity';
 import { CreateUserDto } from './dto/create-user.dto';
@@ -16,12 +16,25 @@ import {
 import { UserStatus } from '../common/enum/user.enums';
 // import * as bcrypt from 'bcryptjs';
 import { OnboardingStatusDto } from './dto/check-status-onboarding.dto';
-import { CompleteOnboardingDto } from './dto/onboarding.dto';
+import {
+  CompleteOnboardingDto,
+  ONBOARDING_ALLOWED_VALUES,
+} from './dto/onboarding.dto';
 import { Logger } from '@nestjs/common';
 import { SchoolsService, PublicSchool } from '../universities/schools.service';
-import { conflict, ValidationFailed } from '../common/errors/app-errors';
+import {
+  AppError,
+  conflict,
+  ValidationFailed,
+} from '../common/errors/app-errors';
+import { ErrorCode } from '../common/errors/error-codes';
+import { runSchema } from '../common/validation/run-schema';
 import { MSG } from '../common/errors/messages';
 import { Gender, Level } from '../common/constants/profile';
+
+const isUniqueViolation = (e: QueryFailedError) =>
+  (e as QueryFailedError & { code?: string }).code === '23505' ||
+  (e.driverError as { code?: string } | undefined)?.code === '23505';
 
 /** Strips secrets before a user leaves the API. */
 export function toPublicUser<T extends User>(user: T): Omit<T, 'passwordHash'> {
@@ -234,15 +247,39 @@ export class UsersService {
    * Idempotent: the same payload twice returns 200 both times and leaves the
    * profile unchanged.
    */
+  /**
+   * Idempotent: repeating the call with the same data returns 200 and the
+   * current profile. Every field problem is reported at once; fields with a
+   * fixed list (level, gender, interests) also get
+   * error.details.allowedValues.<field>.
+   */
   async completeOnboarding(
     userId: string,
-    dto: CompleteOnboardingDto,
+    body: Record<string, unknown>,
   ): Promise<User & { school: PublicSchool }> {
+    const { value: dto, fields } = await runSchema(
+      CompleteOnboardingDto,
+      body ?? {},
+    );
+
+    const school =
+      fields.school || !dto.school
+        ? null
+        : await this.schoolsService.resolve(dto.school);
+    if (!fields.school && !school) fields.school = MSG.schoolInvalid;
+
+    if (Object.keys(fields).length) {
+      const allowed = Object.fromEntries(
+        Object.entries(ONBOARDING_ALLOWED_VALUES).filter(([k]) => k in fields),
+      );
+      throw new AppError(ErrorCode.VALIDATION_FAILED, undefined, fields, {
+        details: Object.keys(allowed).length
+          ? { allowedValues: allowed }
+          : undefined,
+      });
+    }
+
     const user = await this.findByIdOrFail(userId);
-
-    const school = await this.schoolsService.resolve(dto.school);
-    if (!school) throw new ValidationFailed({ school: MSG.schoolInvalid });
-
     await this.assertPhoneAvailable(dto.phone, userId);
 
     if (user.phoneNumber !== dto.phone) {
@@ -255,9 +292,9 @@ export class UsersService {
     await this.saveProfile(userId, {
       firstName: dto.firstName,
       lastName: dto.lastName,
-      universityId: school.id,
-      universityName: school.name,
-      level: dto.level as Level,
+      universityId: school!.id,
+      universityName: school!.name,
+      ...(dto.level !== undefined ? { level: dto.level as Level | null } : {}),
       ...(dto.gender !== undefined ? { gender: dto.gender as Gender } : {}),
       ...(dto.interests !== undefined ? { interests: dto.interests } : {}),
       ...(dto.dateOfBirth !== undefined
@@ -270,7 +307,7 @@ export class UsersService {
     });
 
     const fresh = await this.findByIdOrFail(userId);
-    return Object.assign(fresh, { school });
+    return Object.assign(fresh, { school: school! });
   }
 
   /**
@@ -333,12 +370,19 @@ export class UsersService {
           : { 'profile.lastName': MSG.lastNameInvalid }),
       });
     }
-    await this.userProfileRepository.save(
-      this.userProfileRepository.create({
-        userId,
-        ...changes,
-      } as Partial<UserProfile>),
-    );
+    try {
+      await this.userProfileRepository.save(
+        this.userProfileRepository.create({
+          userId,
+          ...changes,
+        } as Partial<UserProfile>),
+      );
+    } catch (e) {
+      // Two onboarding calls at once (double tap): the other one created the
+      // profile first, so apply the same changes to it instead of failing.
+      if (!(e instanceof QueryFailedError && isUniqueViolation(e))) throw e;
+      await this.userProfileRepository.update({ userId }, changes);
+    }
   }
 
   /**

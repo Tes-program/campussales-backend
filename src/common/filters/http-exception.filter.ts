@@ -30,7 +30,7 @@ export interface ErrorBody {
     details?: Record<string, unknown>;
     requestId?: string;
   };
-  // ---- Legacy fields, kept for one release (remove in B2+1) ----
+  // ---- Legacy fields, kept for one release: remove on 2027-01-31 ----
   /** @deprecated use HTTP status */
   statusCode: number;
   /** @deprecated use error.message / error.fields */
@@ -121,8 +121,10 @@ export class HttpExceptionFilter implements ExceptionFilter {
         err?.stack,
       );
     } else {
+      // Field names only, never the submitted values.
+      const fieldNames = n.fields ? Object.keys(n.fields).join(',') : '';
       this.logger.warn(
-        `[${requestId}] ${request.method} ${path} -> ${n.status} ${n.code}${n.logDetail ? ` (${n.logDetail})` : ''}`,
+        `[${requestId}] ${request.method} ${path} -> ${n.status} ${n.code}${fieldNames ? ` fields=${fieldNames}` : ''}${n.logDetail ? ` (${n.logDetail})` : ''}`,
       );
     }
 

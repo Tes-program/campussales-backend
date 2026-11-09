@@ -18,6 +18,7 @@ import {
   ApiOperation,
   ApiResponse,
   ApiBearerAuth,
+  ApiBody,
   ApiQuery,
 } from '@nestjs/swagger';
 import { toPublicUser, UsersService } from './user.service';
@@ -182,21 +183,30 @@ export class UsersController {
   }
 
   @Post('onboarding/complete')
-  @ApiOperation({ summary: 'Complete user onboarding' })
+  @ApiOperation({
+    summary:
+      'Complete onboarding. Idempotent: repeating it returns 200 and the current profile.',
+  })
   @HttpCode(HttpStatus.OK)
+  @ApiBody({ type: CompleteOnboardingDto })
   @ApiResponse({
     status: 200,
     description:
       'User with profile and canonical school { id, name, shortName, city }',
   })
-  @ApiResponse({ status: 400, description: 'VALIDATION_FAILED with fields' })
+  @ApiResponse({
+    status: 400,
+    description:
+      'VALIDATION_FAILED with fields (+ error.details.allowedValues for level, gender, interests)',
+  })
   @ApiResponse({ status: 409, description: 'CONFLICT - phone already used' })
   async completeOnboarding(
     @CurrentUser() user: User,
-    @Body() onboardingDto: CompleteOnboardingDto,
+    // Validated in the service so the school lookup is reported with the rest.
+    @Body() body: Record<string, unknown>,
   ) {
     return toPublicUser(
-      await this.usersService.completeOnboarding(user.id, onboardingDto),
+      await this.usersService.completeOnboarding(user.id, body ?? {}),
     );
   }
 }

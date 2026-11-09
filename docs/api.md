@@ -242,26 +242,52 @@ Deleted products can't be added (404).
 
 `POST /users/onboarding/complete` (auth) returns **200** (was 201).
 
+- **Idempotent**: repeating the call (same data, double tap, retry after a
+  timeout) returns 200 and the current profile, never 400 or 409.
+- **Returns the saved profile**, so no follow-up `GET` is needed.
+- **All problems at once** in `error.fields`, including an unknown school.
+
+**Decision (H2): `level` is optional.** Nothing in the product (feed, search,
+listings, profile cards) reads it, and the deployed onboarding screen never
+sends it, so requiring it blocked every new user. Ask for it later on the
+profile page (`PATCH /users/me` with `profile.level`). If a feature starts to
+depend on it, make it required in the same release as the frontend field.
+
 | Field | Rule | Messages |
 | --- | --- | --- |
-| `firstName`, `lastName` | Required, trimmed, 2–50 characters. | "First name must be 2 to 50 characters." / "Last name …" |
-| `phone` (alias: `phoneNumber`) | Required. Nigerian mobile: `0XXXXXXXXXX` (11 digits starting 070, 080, 081, 090, 091), `+234XXXXXXXXXX` or `234XXXXXXXXXX`. Spaces, dashes, dots and brackets are ignored. **Saved as `+234XXXXXXXXXX`.** Errors are reported under `fields.phone` even when `phoneNumber` was sent. | "Enter your phone number." · "Enter a valid Nigerian phone number, like 0803 123 4567." |
-| `school` (alias: `universityId`) | Required. A school `id` from `GET /schools`, or its exact name / short name (case-insensitive). Never fuzzy-matched. | "Choose your school." · "Choose your school from the list." |
-| `level` | Required. `100`, `200`, `300`, `400`, `500`, `600`, `Postgraduate`, `Alumnus`. Also accepts `300L`, `300 Level`, numbers, any case. `Graduate` is read as `Alumnus`. | "Choose your level." · "Level must be 100 to 600, Postgraduate or Alumnus." |
+| `firstName`, `lastName` | Required, trimmed, 2–50 characters. | "First name must be 2 to 50 characters." / "Last name must be 2 to 50 characters." |
+| `phone` (alias: `phoneNumber`) | Required. Nigerian mobile: `0XXXXXXXXXX` (11 digits starting 070, 080, 081, 090, 091), `+234XXXXXXXXXX` or `234XXXXXXXXXX`. Spaces, dashes, dots and brackets are ignored. **Saved as `+234XXXXXXXXXX`.** Errors are reported under `fields.phone` even when `phoneNumber` was sent. | "Enter your phone number." · "Enter a valid Nigerian phone number, like 0803 123 4567." · 409 "That number is already used on another account." |
+| `school` (alias: `universityId`) | Required. A school `id` from `GET /schools`, or its exact name / short name (case-insensitive). Never fuzzy-matched. Errors under `fields.school`. | "Choose your school." · "Choose your school from the list." |
+| `level` | **Optional.** Omit to keep the current value; `null` or `""` clears it. Allowed: `100`, `200`, `300`, `400`, `500`, `600`, `Postgraduate`, `Alumnus`. Also accepts `300L`, `300 Level`, numbers, any case. `Graduate` is read as `Alumnus`. | "Level must be 100 to 600, Postgraduate or Alumnus." |
 | `gender` | Optional. `Male`, `Female`, `Prefer not to say` (any case; `prefer_not_to_say` ok). | "Gender must be Male, Female or Prefer not to say." |
-| `interests` | Optional. 0–8 category slugs (aliases accepted and normalised, duplicates removed). | "You can pick up to 8 interests." · "Pick interests from the categories list." |
-| `dateOfBirth`, `bio` (≤ 500), `profilePictureUrl` | Optional, unchanged. | |
+| `interests` | Optional. 0–8 categories by slug, name (`"Clothing & Apparel"`) or alias; normalised to slugs, duplicates removed. Slugs: `electronics`, `books-textbooks`, `school-supplies`, `clothing-apparel`, `furniture`, `home-kitchen`, `sports-outdoors`, `gaming`, `musical-instruments`, `art-crafts`, `bikes-transportation`, `beauty-personal-care`, `other`. | "You can pick up to 8 interests." · "Pick interests from the categories list." |
+| `dateOfBirth` | Optional ISO date. | "Enter a valid date of birth." |
+| `bio` | Optional, ≤ 500 characters. | "Bio must be 500 characters or fewer." |
+| `profilePictureUrl` | Optional text. | |
 | `universityName` | Accepted and ignored: the canonical school name is stored. | |
+
+What the live frontend sends today (all accepted):
+`{ firstName, lastName, phoneNumber: "0803…", gender: "Male" | "Female" | omitted, universityId, interests: ["Clothing & Apparel", …] }`.
 
 Responses:
 
 - **200**: the user (no `passwordHash`) with `phoneNumber` in +234 form,
-  `profile` (including `level`, `universityId`, canonical `universityName`)
-  and `school: { id, name, shortName, city }`.
-- **400** `VALIDATION_FAILED` with `fields`.
-- **409** `CONFLICT` with `fields.phone`: "That number is already used on another account."
+  `profile` (including `level`, `universityId`, canonical `universityName`,
+  `interests` as slugs) and `school: { id, name, shortName, city }`.
+- **400** `VALIDATION_FAILED` with `fields`. When `level`, `gender` or
+  `interests` fail, `error.details.allowedValues.<field>` lists the exact
+  accepted values:
 
-Idempotent: sending the same data again returns 200 and changes nothing.
+  ```json
+  { "error": { "code": "VALIDATION_FAILED",
+      "message": "Please fix the highlighted fields.",
+      "fields": { "level": "Level must be 100 to 600, Postgraduate or Alumnus." },
+      "details": { "allowedValues": { "level": ["100","200","300","400","500","600","Postgraduate","Alumnus"] } } } }
+  ```
+- **409** `CONFLICT` with `fields.phone` when another account uses the number.
+
+Logs for 4xx responses record the `requestId` and the failing field names
+(`fields=phone,school`), never the submitted values.
 
 ## 4. Profile update
 
@@ -662,7 +688,7 @@ Messaging or starting a chat with a blocked user (either direction): **403
 
 | What | Replace with |
 | --- | --- |
-| Error body `statusCode`, `message`, `errorCode`, `timestamp`, `path`, `method` | `error.*` |
+| Error body `statusCode`, `message`, `errorCode`, `timestamp`, `path`, `method` | `error.*` (remove 2027-01-31) |
 | `PATCH /products/:id/sold` | `POST /products/:id/sold` |
 | `PATCH /products/:id/unavailable` | `POST /products/:id/deactivate` / `activate` |
 | `isAvailable`, `isSold` on products | `status` |

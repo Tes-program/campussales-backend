@@ -106,13 +106,17 @@ describe('CompleteOnboardingDto', () => {
       expect(r.fields.level).toBeUndefined();
       expect(r.value.level).toBe(stored);
     });
-    it.each(['700', '0', 'Year 2', ''])('rejects %p', async (level) => {
-      expect((await onboard({ level })).fields.level).toBeDefined();
-    });
-    it('is required', async () => {
-      expect((await onboard({ level: undefined })).fields.level).toBe(
-        'Choose your level.',
+    it.each(['700', '0', 'Year 2'])('rejects %p', async (level) => {
+      expect((await onboard({ level })).fields.level).toBe(
+        'Level must be 100 to 600, Postgraduate or Alumnus.',
       );
+    });
+    it('is optional (H2): missing, null or blank are fine', async () => {
+      for (const level of [undefined, null, '', '  ']) {
+        const r = await onboard({ level });
+        expect(r.fields).toEqual({});
+      }
+      expect((await onboard({ level: '' })).value.level).toBeNull();
     });
   });
 
@@ -195,17 +199,20 @@ describe('CompleteOnboardingDto', () => {
     );
   });
 
-  it('accepts the exact payload the deployed frontend sends', async () => {
+  it('accepts the exact payload the deployed frontend sends (no level)', async () => {
     const r = await runSchema(CompleteOnboardingDto, {
       firstName: 'Ada',
       lastName: 'Okafor',
       phoneNumber: '08031234567',
-      gender: 'Female',
+      gender: undefined, // "Prefer not to say" is sent as no gender
       universityId: SCHOOL_ID,
-      level: 'Graduate',
-      interests: ['clothing', 'beauty'],
+      interests: ['Clothing & Apparel', 'Beauty & Personal Care'],
     });
     expect(r.fields).toEqual({});
+    expect(r.value.interests).toEqual([
+      'clothing-apparel',
+      'beauty-personal-care',
+    ]);
   });
 });
 

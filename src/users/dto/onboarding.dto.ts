@@ -1,7 +1,12 @@
 // Schema for POST /api/users/onboarding/complete.
-// Canonical fields: phone, school, level. The deployed frontend still sends
+// Canonical fields: phone, school. The deployed frontend still sends
 // phoneNumber / universityId; those are accepted as aliases and any error is
 // reported under the canonical name (fields.phone, fields.school).
+//
+// H2 decision: `level` is optional (null allowed). Nothing in the product
+// (feed, search, listings) reads it, and the deployed frontend never sends
+// it, so requiring it blocked every new user. The profile page can ask for it
+// later via PATCH /users/me.
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { Expose, Transform } from 'class-transformer';
 import { Allow, IsDateString, IsOptional, IsString } from 'class-validator';
@@ -28,6 +33,19 @@ import {
 } from '../../common/validation/rules';
 
 export type { Gender } from '../../common/constants/profile';
+
+/** A blank level means "not given". */
+const normaliseOptionalLevel = (v: unknown) =>
+  v === null || (typeof v === 'string' && v.trim() === '')
+    ? null
+    : normaliseLevelInput(v);
+
+/** Fields with a fixed list of values; echoed in error.details.allowedValues. */
+export const ONBOARDING_ALLOWED_VALUES = {
+  level: LEVELS,
+  gender: GENDERS,
+  interests: CATEGORY_SLUGS,
+} as const;
 
 const firstDefined = (...values: unknown[]) =>
   values.find((v) => v !== undefined && v !== null && v !== '');
@@ -81,10 +99,15 @@ export class CompleteOnboardingDto {
   @Allow()
   universityName?: string;
 
-  @ApiProperty({ enum: LEVELS, example: '300' })
-  @Normalise(normaliseLevelInput)
-  @Rule(validateLevel)
-  level: string;
+  @ApiPropertyOptional({
+    enum: LEVELS,
+    nullable: true,
+    example: '300',
+    description: 'Optional. Omit to keep the current value; null clears it.',
+  })
+  @Normalise(normaliseOptionalLevel)
+  @OptionalRule((v) => (v === null ? null : validateLevel(v)))
+  level?: string | null;
 
   @ApiPropertyOptional({ enum: GENDERS })
   @Normalise(normaliseGenderInput)
