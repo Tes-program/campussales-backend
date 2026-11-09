@@ -6,15 +6,18 @@ import { InjectRepository } from '@nestjs/typeorm';
 // (bcryptjs blocked every other request for ~300 ms per login). Same
 // $2b$ hashes, same cost; existing bcryptjs hashes verify unchanged.
 import * as bcrypt from 'bcrypt';
-import { randomBytes, randomInt } from 'crypto';
-import { IsNull, Repository } from 'typeorm';
+import { randomBytes } from 'crypto';
+import { IsNull, QueryFailedError, Repository } from 'typeorm';
 import {
   AppError,
+  FieldErrors,
   rateLimited,
   ValidationFailed,
 } from '../common/errors/app-errors';
 import { ErrorCode } from '../common/errors/error-codes';
 import { RateLimitService } from '../common/rate-limit/rate-limit.service';
+import { runSchema } from '../common/validation/run-schema';
+import { legalVersions, PRIVACY_VERSION, TERMS_VERSION } from '../config/legal';
 import { EmailService } from '../common/services/email.service';
 import { UserStatus, UserType } from '../common/enum/user.enums';
 import { SchoolsService } from '../universities/schools.service';
@@ -85,10 +88,39 @@ export class AuthService {
 
   // ───────────────────────────── sign-up ──────────────────────────────
 
+  /**
+   * Validates the whole body at once (sync rules, then school and username
+   * lookups) so every problem comes back in one VALIDATION_FAILED response.
+   * When the terms version is the only problem the code is
+   * TERMS_VERSION_MISMATCH and error.details carries the current versions.
+   */
   async signup(
-    dto: SignupDto | LegacyRegisterDto,
+    body: Record<string, unknown>,
     ctx: SessionContext,
+    opts: { legacy?: boolean } = {},
   ): Promise<IssuedSession> {
+    const { value: dto, fields } = await runSchema<
+      SignupDto | LegacyRegisterDto
+    >(opts.legacy ? LegacyRegisterDto : SignupDto, body ?? {});
+
+    let signupSchoolId: string | null = null;
+    const schoolField = dto.schoolId !== undefined ? 'schoolId' : 'campus';
+    const schoolRef = dto.schoolId ?? dto.campus;
+    if (schoolRef && !fields[schoolField]) {
+      const school = await this.schools.resolve(schoolRef);
+      if (school) signupSchoolId = school.id;
+      else fields[schoolField] = SIGNUP_MESSAGES.school;
+    }
+
+    if (
+      !fields.username &&
+      (await this.usersService.isUsernameTaken(dto.username))
+    ) {
+      fields.username = SIGNUP_MESSAGES.usernameTaken;
+    }
+
+    if (Object.keys(fields).length) throw this.signupValidationError(fields);
+
     const limit = await this.rateLimit.consume(
       RateLimitService.key('signup-ip', ctx.ip ?? 'unknown'),
       AUTH.signup.perIp,
@@ -105,55 +137,71 @@ export class AuthService {
     // clear 409 instead of a neutral flow, because sign-up logs the user in
     // straight away. Enumeration is limited by the per-IP sign-up limit.
     if (await this.usersService.findByEmail(dto.email)) {
-      throw new AppError(ErrorCode.CONFLICT, SIGNUP_MESSAGES.emailTaken, {
-        email: SIGNUP_MESSAGES.emailTaken,
-      });
-    }
-
-    let signupSchoolId: string | null = null;
-    const schoolRef = dto.schoolId ?? dto.campus;
-    if (schoolRef) {
-      const school = await this.schools.resolve(schoolRef);
-      if (!school) {
-        throw new ValidationFailed({
-          [dto.schoolId ? 'schoolId' : 'campus']: SIGNUP_MESSAGES.school,
-        });
-      }
-      signupSchoolId = school.id;
-    }
-
-    let username = dto.username;
-    if (username) {
-      if (await this.usersService.findByUsername(username)) {
-        throw new AppError(ErrorCode.CONFLICT, SIGNUP_MESSAGES.usernameTaken, {
-          username: SIGNUP_MESSAGES.usernameTaken,
-        });
-      }
-    } else {
-      username = await this.generateUsername(dto.email);
+      throw this.emailTaken();
     }
 
     const acceptedTerms = dto.acceptedTerms === true;
-    const user = await this.users.save(
-      this.users.create({
-        email: dto.email,
-        username,
-        passwordHash: await bcrypt.hash(dto.password, BCRYPT_COST),
-        fullName: dto.name ?? null,
-        userType: UserType.STUDENT, // never trust a client-supplied role
-        status: UserStatus.ACTIVE,
-        signupSchoolId,
-        acceptedTermsVersion: acceptedTerms
-          ? (dto.acceptedTermsVersion ?? null)
-          : null,
-        acceptedTermsAt: acceptedTerms ? new Date() : null,
-        verifyBy: new Date(Date.now() + AUTH.verifyGraceHours * 3_600_000),
-      }),
-    );
+    const acceptedAt = acceptedTerms ? new Date() : null;
+    let user: User;
+    try {
+      user = await this.users.save(
+        this.users.create({
+          email: dto.email,
+          username: dto.username,
+          passwordHash: await bcrypt.hash(dto.password, BCRYPT_COST),
+          // The form only asks for a username, which is the public name.
+          fullName: dto.name ?? dto.username,
+          userType: UserType.STUDENT, // never trust a client-supplied role
+          status: UserStatus.ACTIVE,
+          signupSchoolId,
+          // One checkbox covers both documents ("Terms and Privacy Policy").
+          acceptedTermsVersion: acceptedTerms ? TERMS_VERSION : null,
+          acceptedTermsAt: acceptedAt,
+          acceptedPrivacyVersion: acceptedTerms ? PRIVACY_VERSION : null,
+          acceptedPrivacyAt: acceptedAt,
+          verifyBy: new Date(Date.now() + AUTH.verifyGraceHours * 3_600_000),
+        }),
+      );
+    } catch (e) {
+      // Lost a race with a concurrent sign-up for the same email/username.
+      const detail = (e as { driverError?: { detail?: string } }).driverError
+        ?.detail;
+      if (e instanceof QueryFailedError && /username/i.test(detail ?? '')) {
+        throw new ValidationFailed({
+          username: SIGNUP_MESSAGES.usernameTaken,
+        });
+      }
+      if (e instanceof QueryFailedError && /email/i.test(detail ?? '')) {
+        throw this.emailTaken();
+      }
+      throw e;
+    }
 
     this.sendVerification(user).catch(() => undefined);
     const fresh = await this.usersService.findByIdOrFail(user.id);
     return this.startSession(fresh, ctx);
+  }
+
+  private signupValidationError(fields: FieldErrors): AppError {
+    const versionProblem = 'acceptedTermsVersion' in fields;
+    const details = versionProblem
+      ? { ...legalVersions(frontendUrl(this.config)) }
+      : undefined;
+    const onlyVersion = versionProblem && Object.keys(fields).length === 1;
+    return new AppError(
+      onlyVersion
+        ? ErrorCode.TERMS_VERSION_MISMATCH
+        : ErrorCode.VALIDATION_FAILED,
+      undefined,
+      fields,
+      { details },
+    );
+  }
+
+  private emailTaken(): AppError {
+    return new AppError(ErrorCode.CONFLICT, SIGNUP_MESSAGES.emailTaken, {
+      email: SIGNUP_MESSAGES.emailTaken,
+    });
   }
 
   // ───────────────────────────── login ────────────────────────────────
@@ -278,7 +326,7 @@ export class AuthService {
         currentPassword: 'Your current password is incorrect.',
       });
     }
-    const problem = checkPassword(dto.newPassword, this.passwordContext(fresh));
+    const problem = checkPassword(dto.newPassword);
     if (problem) throw new ValidationFailed({ newPassword: problem });
     if (await bcrypt.compare(dto.newPassword, fresh.passwordHash)) {
       throw new ValidationFailed({
@@ -369,7 +417,7 @@ export class AuthService {
       throw new AppError(ErrorCode.TOKEN_EXPIRED);
     }
     const user = await this.usersService.findByIdOrFail(reset.userId);
-    const problem = checkPassword(dto.newPassword, this.passwordContext(user));
+    const problem = checkPassword(dto.newPassword);
     if (problem) throw new ValidationFailed({ newPassword: problem });
 
     // Single use: claim the token atomically before changing anything.
@@ -496,32 +544,7 @@ export class AuthService {
     await this.resets.update({ userId, isUsed: false }, { isUsed: true });
   }
 
-  private passwordContext(user: User) {
-    const name =
-      user.fullName ??
-      ([user.profile?.firstName, user.profile?.lastName]
-        .filter(Boolean)
-        .join(' ') ||
-        user.username);
-    return { email: user.email, name };
-  }
-
   private firstName(user: User): string | null {
     return user.profile?.firstName ?? user.fullName?.split(' ')[0] ?? null;
-  }
-
-  private async generateUsername(email: string): Promise<string> {
-    const base =
-      email
-        .split('@')[0]
-        .toLowerCase()
-        .replace(/[^a-z0-9._]/g, '')
-        .slice(0, 20) || 'student';
-    for (let i = 0; i < 10; i++) {
-      const candidate = `${base}${randomInt(1000, 9999)}`;
-      if (!(await this.usersService.findByUsername(candidate)))
-        return candidate;
-    }
-    return `${base}${randomBytes(4).toString('hex')}`;
   }
 }

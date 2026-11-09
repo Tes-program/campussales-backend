@@ -94,6 +94,17 @@ export class UsersService {
     });
   }
 
+  /** Usernames are unique ignoring case ("Ada" and "ada" clash). */
+  async isUsernameTaken(username: string): Promise<boolean> {
+    return this.usersRepository.exists({
+      where: {
+        username: Raw((col) => `LOWER(${col}) = LOWER(:username)`, {
+          username,
+        }),
+      },
+    });
+  }
+
   async findAll(
     page: number = 1,
     limit: number = 10,

@@ -31,6 +31,9 @@ export enum ErrorCode {
   // B5
   /** 504: the request took longer than 15 seconds. Safe to retry reads. */
   TIMEOUT = 'TIMEOUT',
+  // H1
+  /** 400: sign-up sent an outdated (or no) acceptedTermsVersion. error.details has the current versions. */
+  TERMS_VERSION_MISMATCH = 'TERMS_VERSION_MISMATCH',
 }
 
 export const ERROR_CODE_STATUS: Record<ErrorCode, number> = {
@@ -49,6 +52,7 @@ export const ERROR_CODE_STATUS: Record<ErrorCode, number> = {
   [ErrorCode.MODERATION_REJECTED]: HttpStatus.BAD_REQUEST,
   [ErrorCode.ACCOUNT_SUSPENDED]: HttpStatus.FORBIDDEN,
   [ErrorCode.TIMEOUT]: HttpStatus.GATEWAY_TIMEOUT,
+  [ErrorCode.TERMS_VERSION_MISMATCH]: HttpStatus.BAD_REQUEST,
 };
 
 /** Maps any HTTP status to the closest contract code. */

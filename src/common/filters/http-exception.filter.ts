@@ -26,6 +26,8 @@ export interface ErrorBody {
     fields?: FieldErrors;
     /** Only on 429 RATE_LIMITED. Same value as the Retry-After header. */
     retryAfterSeconds?: number;
+    /** Extra machine-readable context, e.g. current versions on TERMS_VERSION_MISMATCH. */
+    details?: Record<string, unknown>;
     requestId?: string;
   };
   // ---- Legacy fields, kept for one release (remove in B2+1) ----
@@ -49,6 +51,7 @@ interface Normalised {
   message: string;
   fields?: FieldErrors;
   retryAfterSeconds?: number;
+  details?: Record<string, unknown>;
   /** Original framework message, only for logs. */
   logDetail?: string;
 }
@@ -137,6 +140,7 @@ export class HttpExceptionFilter implements ExceptionFilter {
         ...(n.retryAfterSeconds
           ? { retryAfterSeconds: n.retryAfterSeconds }
           : {}),
+        ...(n.details ? { details: n.details } : {}),
         ...(requestId ? { requestId } : {}),
       },
       statusCode: n.status,
@@ -244,6 +248,7 @@ export class HttpExceptionFilter implements ExceptionFilter {
           fields?: FieldErrors;
           errorCode?: unknown;
           retryAfterSeconds?: unknown;
+          details?: unknown;
         };
 
     // 5xx never leak their message.
@@ -299,12 +304,21 @@ export class HttpExceptionFilter implements ExceptionFilter {
         ? res.retryAfterSeconds
         : undefined;
 
+    const details =
+      typeof res === 'object' &&
+      res.details &&
+      typeof res.details === 'object' &&
+      !Array.isArray(res.details)
+        ? (res.details as Record<string, unknown>)
+        : undefined;
+
     return {
       status,
       code,
       message,
       ...(fields && Object.keys(fields).length ? { fields } : {}),
       ...(retryAfterSeconds ? { retryAfterSeconds } : {}),
+      ...(details ? { details } : {}),
       logDetail,
     };
   }

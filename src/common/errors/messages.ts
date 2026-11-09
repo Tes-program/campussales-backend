@@ -25,6 +25,8 @@ export const DEFAULT_MESSAGES: Record<ErrorCode, string> = {
     'Posting is paused on your account. Check your email for details.',
   [ErrorCode.TIMEOUT]:
     'This is taking longer than it should. Please check your connection and try again.',
+  [ErrorCode.TERMS_VERSION_MISMATCH]:
+    'We updated our Terms. Please review them and try again.',
   [ErrorCode.SERVER_ERROR]:
     'Something went wrong on our side. Please try again in a moment.',
 };

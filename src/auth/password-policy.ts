@@ -1,85 +1,43 @@
 /**
- * THE password rule, used at sign-up, reset and change (and documented in
- * docs/api.md so the frontend checklist matches):
+ * THE password rule, used at sign-up, reset and change. It is exactly the rule
+ * the frontend form shows (Campus-Sales src/lib/validators.ts PASSWORD_RULE),
+ * with the same text, so the server never rejects a password the checklist
+ * marked as fine:
  *
- *   - at least 8 characters
- *   - at least one letter and one number
- *   - at most 72 bytes in UTF-8 (bcrypt ignores anything longer)
- *   - not one of the ~1000 most common passwords (data/common-passwords.txt)
- *   - does not contain the account's email (local part) or name
+ *   - at least 8 characters (counted like JavaScript's String.length)
+ *   - at least one number (0-9)
  *
- * The rule before B2 was 8+ characters with a letter and a number, but only
- * for reset/change (sign-up allowed 6). It also limited characters to
- * A-Z, 0-9 and @$!%*#?&, which rejected spaces and most symbols without making
- * passwords stronger; that restriction is dropped.
+ * The only extra bound is technical, not a strength rule: bcrypt ignores
+ * anything past 72 bytes, so longer passwords are refused rather than silently
+ * truncated.
+ *
+ * H1: the B2 rule also required a letter, rejected common passwords and
+ * rejected passwords containing the email or name. The form never showed
+ * those, so students were rejected with no way to know why; they were removed
+ * to match the form. Change both sides together if the rule is tightened.
  */
-import { readFileSync } from 'fs';
-import { join } from 'path';
-
 export const PASSWORD_RULE = {
   minLength: 8,
   maxBytes: 72,
-  requiresLetter: true,
   requiresNumber: true,
 } as const;
 
 export const PASSWORD_MESSAGES = {
   required: 'Enter a password.',
-  short: 'Use at least 8 characters.',
+  rule: 'Use at least 8 characters, including a number.',
   long: 'That password is too long. Use 72 characters or fewer.',
-  letterAndNumber: 'Use at least one letter and one number.',
-  common: 'That password is too common. Pick something harder to guess.',
-  personal: "Don't use your email or name in your password.",
 } as const;
 
-let common: Set<string> | null = null;
-function commonPasswords(): Set<string> {
-  if (!common) {
-    const file = join(__dirname, '..', '..', 'data', 'common-passwords.txt');
-    common = new Set(
-      readFileSync(file, 'utf8')
-        .split('\n')
-        .map((l) => l.trim().toLowerCase())
-        .filter((l) => l && !l.startsWith('#')),
-    );
-  }
-  return common;
-}
-
-const squash = (s: string) => s.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '');
-
 /** Returns a student-facing message, or null when the password is acceptable. */
-export function checkPassword(
-  password: unknown,
-  context: { email?: string | null; name?: string | null } = {},
-): string | null {
+export function checkPassword(password: unknown): string | null {
   if (typeof password !== 'string' || password.length === 0) {
     return PASSWORD_MESSAGES.required;
   }
-  if (Array.from(password).length < PASSWORD_RULE.minLength) {
-    return PASSWORD_MESSAGES.short;
+  if (password.length < PASSWORD_RULE.minLength || !/\d/.test(password)) {
+    return PASSWORD_MESSAGES.rule;
   }
   if (Buffer.byteLength(password, 'utf8') > PASSWORD_RULE.maxBytes) {
     return PASSWORD_MESSAGES.long;
-  }
-  if (!/\p{L}/u.test(password) || !/\p{N}/u.test(password)) {
-    return PASSWORD_MESSAGES.letterAndNumber;
-  }
-  if (commonPasswords().has(password.toLowerCase())) {
-    return PASSWORD_MESSAGES.common;
-  }
-  const pw = squash(password);
-  const personal: string[] = [];
-  if (context.email) {
-    personal.push(squash(context.email));
-    personal.push(squash(context.email.split('@')[0]));
-  }
-  if (context.name) {
-    personal.push(squash(context.name));
-    personal.push(...context.name.split(/\s+/).map(squash));
-  }
-  if (personal.some((p) => p.length >= 3 && pw.includes(p))) {
-    return PASSWORD_MESSAGES.personal;
   }
   return null;
 }

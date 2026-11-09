@@ -42,7 +42,7 @@ For one release, so the deployed frontend keeps working while it migrates:
 
 - `refreshToken` is also returned in the JSON body of signup, login and refresh;
 - `POST /auth/refresh` and `POST /auth/logout` accept `{ refreshToken }` in the body;
-- `POST /auth/register` accepts the old body without `acceptedTerms`.
+- `POST /auth/register` accepts a body without the terms fields.
 
 **Removal date: 2027-01-31.** After that, unset the variable and delete the
 legacy branches (`legacyTokensEnabled` call sites, `LegacyRegisterDto`).
@@ -52,17 +52,17 @@ by hash and treated as their own family.
 
 ## Passwords
 
-One rule (`src/auth/password-policy.ts`) at sign-up, reset and change:
+One rule (`src/auth/password-policy.ts`) at sign-up, reset and change. It
+is exactly the rule the frontend form shows, with the same text:
 
-- at least 8 characters, at least one letter and one number;
-- at most 72 bytes (the bcrypt limit);
-- not in `data/common-passwords.txt` (top 1000 from SecLists, plus a few local ones);
-- must not contain the email (or its local part) or the name.
+- at least 8 characters, including a number
+  ("Use at least 8 characters, including a number.");
+- at most 72 bytes (the bcrypt limit; a technical bound, not a strength rule).
 
-The previous rule was the same 8-plus with a letter and a number, but only on
-reset/change (sign-up allowed 6). It also limited characters to A-Z, 0-9 and
-`@$!%*#?&`, which rejected spaces and symbols without adding strength; that
-limit is gone.
+H1 removed the B2 extras (a letter required, the common-password list, no
+email/name in the password). The form never showed them, so students were
+rejected without knowing why. If the rule is tightened again, change the
+server and the form checklist in the same release.
 
 Hashing: bcrypt, cost 12 (already in use). Hashes below cost 12 are upgraded
 on the next successful login.
@@ -88,8 +88,13 @@ on the next successful login.
   activation. Mitigation: 10 sign-ups per IP per hour.
 - Clients can no longer choose `userType` (previously anyone could register
   as `admin`). Every new account is a student.
-- `acceptedTerms` must be `true`; `acceptedTermsVersion` and the timestamp are
-  stored. If `CURRENT_TERMS_VERSION` is set, the version must match it.
+- `acceptedTerms` must be `true`, and `acceptedTermsVersion` must equal
+  `TERMS_VERSION` in `src/config/legal.ts` (served by `GET /api/legal/versions`);
+  otherwise 400 `TERMS_VERSION_MISMATCH` with the current versions. The terms
+  and privacy versions and timestamps are stored on the user.
+- `username` is the public name and is unique ignoring case (checked in code,
+  plus the `UQ_users_username_lower` index from the H1 migration). `name` is
+  optional and defaults to the username.
 - There are no social login endpoints (no Google or Apple code existed), so
   nothing was removed. Tests assert these routes return 404.
 
@@ -181,5 +186,4 @@ styles.
 | `AUTH_COOKIE_DOMAIN` | optional | e.g. `.campussales.ng` |
 | `AUTH_COOKIE_SECURE` | optional | never `false` in production (startup fails) |
 | `TRUST_PROXY` | optional | defaults to `1` in production |
-| `CURRENT_TERMS_VERSION` | optional | when set, sign-up must send this version |
 | `RATE_LIMIT_STORE` | optional | `memory` to skip Redis |

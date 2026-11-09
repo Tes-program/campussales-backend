@@ -1,6 +1,11 @@
-// Schemas for POST /api/auth/signup (strict) and the legacy
-// POST /api/auth/register (deployed frontend; terms optional while
-// AUTH_LEGACY_TOKENS=true).
+// Schemas for POST /api/auth/signup and POST /api/auth/register (the deployed
+// frontend's endpoint; identical unless AUTH_LEGACY_TOKENS=true, which makes
+// the terms fields optional during the B2 transition).
+//
+// Field names match the sign-up form: email, username, password,
+// confirmPassword, campus, plus acceptedTerms / acceptedTermsVersion. `name`
+// is optional (it defaults to the username), so an error never mentions it
+// unless the client sent it.
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { Allow, IsEmail, IsOptional } from 'class-validator';
 import {
@@ -13,51 +18,65 @@ import {
   hasControlChars,
   charLength,
 } from '../../common/validation/rules';
-import { checkPassword, PASSWORD_RULE } from '../password-policy';
+import { TERMS_VERSION } from '../../config/legal';
+import { checkPassword, PASSWORD_MESSAGES } from '../password-policy';
+
+export const USERNAME_RULE = {
+  minLength: 2,
+  maxLength: 30,
+  pattern: /^[A-Za-z0-9._]+$/,
+} as const;
 
 export const SIGNUP_MESSAGES = {
   name: 'Enter your name (2 to 80 characters).',
   email: 'Enter a valid email address.',
   emailTaken: 'An account with this email already exists. Log in instead.',
   terms: 'Please accept the Terms and Privacy Policy to continue.',
-  termsVersion: 'Please review the latest Terms and try again.',
+  termsVersion: 'We updated our Terms. Please review them and try again.',
   school: 'Choose your school from the list.',
-  username: 'Usernames are 3 to 30 letters, numbers, dots or underscores.',
+  usernameRequired: 'Choose a username.',
+  username: 'Usernames are 2 to 30 letters, numbers, dots or underscores.',
   usernameTaken: 'That username is taken. Try another one.',
+  confirmPassword: "Those passwords don't match.",
 } as const;
 
 const normaliseEmail = (v: unknown) =>
   typeof v === 'string' ? v.trim().toLowerCase() : v;
 
+const trim = (v: unknown) => (typeof v === 'string' ? v.trim() : v);
+
+/** A blank optional field counts as "not sent". */
+const blankToUndefined = (v: unknown) => {
+  const t = normaliseText(v);
+  return t === null || t === '' ? undefined : t;
+};
+
 const validateName = (v: unknown) =>
   typeof v === 'string' &&
   !hasControlChars(v) &&
-  charLength(v.trim()) >= 2 &&
-  charLength(v.trim()) <= 80
+  charLength(v) >= 2 &&
+  charLength(v) <= 80
     ? null
     : SIGNUP_MESSAGES.name;
 
-const validateUsername = (v: unknown) =>
-  typeof v === 'string' && /^[A-Za-z0-9._]{3,30}$/.test(v)
+export const validateUsername = (v: unknown) => {
+  if (v === undefined || v === null || v === '')
+    return SIGNUP_MESSAGES.usernameRequired;
+  return typeof v === 'string' &&
+    v.length >= USERNAME_RULE.minLength &&
+    v.length <= USERNAME_RULE.maxLength &&
+    USERNAME_RULE.pattern.test(v)
     ? null
     : SIGNUP_MESSAGES.username;
+};
 
-const validatePasswordField = (v: unknown, o?: Record<string, unknown>) =>
-  checkPassword(v, {
-    email: typeof o?.email === 'string' ? o.email : null,
-    name:
-      typeof o?.name === 'string'
-        ? o.name
-        : typeof o?.username === 'string'
-          ? o.username
-          : null,
-  });
-
-const validateTermsVersion = (v: unknown) => {
-  if (typeof v !== 'string' || !v.trim() || v.length > 32)
-    return SIGNUP_MESSAGES.termsVersion;
-  const current = process.env.CURRENT_TERMS_VERSION;
-  return current && v !== current ? SIGNUP_MESSAGES.termsVersion : null;
+/**
+ * Only checked once the terms box is ticked, so an old client that sends
+ * neither field gets one clear error (acceptedTerms), not two.
+ */
+const validateTermsVersion = (v: unknown, o?: Record<string, unknown>) => {
+  if (o?.acceptedTerms !== true) return null;
+  return v === TERMS_VERSION ? null : SIGNUP_MESSAGES.termsVersion;
 };
 
 const isUuidLike = (v: unknown) =>
@@ -70,58 +89,71 @@ class SignupBase {
   email: string;
 
   @ApiProperty({
-    description: `≥ ${PASSWORD_RULE.minLength} characters, a letter and a number, ≤ ${PASSWORD_RULE.maxBytes} bytes, not common, not your email or name.`,
+    example: 'ada_okafor',
+    description:
+      'Public name shown to other users. 2–30 letters, numbers, dots or underscores; trimmed; unique ignoring case.',
   })
-  @Rule(validatePasswordField)
+  @Normalise(trim)
+  @Rule(validateUsername)
+  username: string;
+
+  @ApiPropertyOptional({
+    description:
+      'Optional display name (2–80 characters). Defaults to the username.',
+  })
+  @Normalise(blankToUndefined)
+  @OptionalRule(validateName)
+  name?: string;
+
+  @ApiProperty({
+    description: `At least 8 characters, including a number. "${PASSWORD_MESSAGES.rule}"`,
+  })
+  @Rule((v) => checkPassword(v))
   password: string;
 
-  @ApiPropertyOptional({
-    description: 'School id from GET /api/schools (optional until onboarding).',
-  })
-  @OptionalRule((v) =>
-    v === null || isUuidLike(v) ? null : SIGNUP_MESSAGES.school,
+  @ApiPropertyOptional({ description: 'When sent, must equal password.' })
+  @OptionalRule((v, o) =>
+    v === o?.password ? null : SIGNUP_MESSAGES.confirmPassword,
   )
-  schoolId?: string | null;
+  confirmPassword?: string;
 
   @ApiPropertyOptional({
-    description: 'School name or short name, instead of schoolId.',
+    description:
+      'School id or name/short name from GET /api/schools. Stored as the school id.',
   })
-  @Normalise(normaliseText)
+  @Normalise(blankToUndefined)
   @OptionalRule((v) =>
-    v === null || (typeof v === 'string' && v.length <= 150)
-      ? null
-      : SIGNUP_MESSAGES.school,
+    typeof v === 'string' && v.length <= 150 ? null : SIGNUP_MESSAGES.school,
   )
-  campus?: string | null;
+  campus?: string;
 
-  @ApiPropertyOptional({ description: 'Generated from the email if omitted.' })
-  @Normalise(normaliseText)
-  @OptionalRule(validateUsername)
-  username?: string;
+  @ApiPropertyOptional({ description: 'School id; alternative to campus.' })
+  @Normalise(blankToUndefined)
+  @OptionalRule((v) => (isUuidLike(v) ? null : SIGNUP_MESSAGES.school))
+  schoolId?: string;
+
+  /** Accepted for compatibility and ignored: every new account is a student. */
+  @ApiPropertyOptional({ deprecated: true })
+  @IsOptional()
+  @Allow()
+  userType?: string;
 }
 
 export class SignupDto extends SignupBase {
-  @ApiProperty({ example: 'Ada Okafor' })
-  @Normalise(normaliseText)
-  @Rule(validateName)
-  name: string;
-
   @ApiProperty({ example: true, description: 'Must be true.' })
   @Rule((v) => (v === true ? null : SIGNUP_MESSAGES.terms))
   acceptedTerms: boolean;
 
-  @ApiProperty({ example: '2026-11-01' })
+  @ApiProperty({
+    example: TERMS_VERSION,
+    description: 'Must equal termsVersion from GET /api/legal/versions.',
+  })
   @Rule(validateTermsVersion)
   acceptedTermsVersion: string;
 }
 
-/** What the deployed frontend sends today: { email, password, username, userType? }. */
+/** Only while AUTH_LEGACY_TOKENS=true: terms may be omitted. */
 export class LegacyRegisterDto extends SignupBase {
-  @ApiPropertyOptional()
-  @Normalise(normaliseText)
-  @OptionalRule(validateName)
-  name?: string;
-
   @ApiPropertyOptional()
   @OptionalRule((v) => (v === true ? null : SIGNUP_MESSAGES.terms))
   acceptedTerms?: boolean;
@@ -129,10 +161,4 @@ export class LegacyRegisterDto extends SignupBase {
   @ApiPropertyOptional()
   @OptionalRule(validateTermsVersion)
   acceptedTermsVersion?: string;
-
-  /** Accepted for compatibility and ignored: every new account is a student. */
-  @ApiPropertyOptional({ deprecated: true })
-  @IsOptional()
-  @Allow()
-  userType?: string;
 }

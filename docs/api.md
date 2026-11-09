@@ -12,7 +12,8 @@ route are at `/api/docs` (Swagger).
 
 ## 1. Errors
 
-Every non-2xx response has this body:
+Every non-2xx response has this body. All problems are reported at once,
+one message per field; messages are never joined into one string:
 
 ```json
 {
@@ -30,6 +31,7 @@ Every non-2xx response has this body:
 | `error.code` | One of the codes below. Branch on this, never on the message. |
 | `error.message` | Student-facing, safe to show as-is. Never contains stack traces or internal ids. |
 | `error.fields` | Only on field-level problems. Keys are request field names; nested fields use dots (`profile.level`); array items report on the array (`images`, not `images.2`). Values are student-facing and safe to show under the input. |
+| `error.details` | Only on some codes (e.g. `TERMS_VERSION_MISMATCH`): extra machine-readable context. |
 | `error.requestId` | Same value as the `X-Request-Id` response header. Show it in "contact support" flows. |
 
 ### Codes
@@ -50,6 +52,7 @@ Every non-2xx response has this body:
 | 403 | `BLOCKED` | One user blocked the other. Neutral message. |
 | 400 | `MODERATION_REJECTED` | Listing screening rejected the item (`fields` explains). |
 | 403 | `ACCOUNT_SUSPENDED` | Posting is paused for this account. |
+| 400 | `TERMS_VERSION_MISMATCH` | Sign-up sent a missing or outdated `acceptedTermsVersion` (and nothing else was wrong). `fields.acceptedTermsVersion` is set and `error.details` holds the current versions (same shape as `GET /legal/versions`). |
 
 429 responses also carry `error.retryAfterSeconds` and a `Retry-After` header.
 
@@ -511,8 +514,8 @@ While `AUTH_LEGACY_TOKENS=true` (until **2027-01-31**) the body also has
 
 | Method & path | Auth | Body | Success | Errors |
 | --- | --- | --- | --- | --- |
-| `POST /auth/signup` | – | `name`, `email`, `password`, `acceptedTerms: true`, `acceptedTermsVersion`, optional `schoolId` or `campus`, optional `username` | 201 session + cookie; verification email sent | 400 fields · 409 email taken · 429 |
-| `POST /auth/register` | – | Deprecated alias. Legacy body (`email`, `password`, `username`) accepted only while legacy mode is on. | as signup | |
+| `POST /auth/signup` | – | `email`, `username`, `password`, `confirmPassword?`, `campus?` (or `schoolId?`), `acceptedTerms: true`, `acceptedTermsVersion`, `name?` | 201 session + cookie; verification email sent | 400 `VALIDATION_FAILED` fields · 400 `TERMS_VERSION_MISMATCH` · 409 email taken · 429 |
+| `POST /auth/register` | – | Alias of `/auth/signup` (same body and rules). While legacy mode is on, the two terms fields may be omitted. | as signup | as signup |
 | `POST /auth/login` | – | `email`, `password` | 200 session + cookie | 401 `INVALID_CREDENTIALS` · 429 + `retryAfterSeconds` |
 | `POST /auth/refresh` | cookie | – | 200 session + new cookie | 401 `UNAUTHENTICATED` |
 | `POST /auth/logout` | cookie | – | 204, cookie cleared | – |
@@ -524,34 +527,72 @@ While `AUTH_LEGACY_TOKENS=true` (until **2027-01-31**) the body also has
 | `POST /auth/resend-verification` | bearer | – | 200 `{ message }` | 429 (3/hour) |
 | `GET /auth/me` | bearer | – | user (with `emailVerified`) | 401 |
 
-### Password rule (match the frontend checklist to this)
+### Password rule (identical to the frontend checklist)
 
 - at least 8 characters
-- at least one letter and one number
-- at most 72 bytes
-- not a common password
-- doesn't contain your email or name
+- at least one number
+- at most 72 bytes (bcrypt limit)
 
-Messages (`fields.password` / `fields.newPassword`): "Use at least 8
-characters." · "Use at least one letter and one number." · "That password is
-too long. Use 72 characters or fewer." · "That password is too common. Pick
-something harder to guess." · "Don't use your email or name in your password."
+Messages (`fields.password` / `fields.newPassword`): "Enter a password." ·
+"Use at least 8 characters, including a number." · "That password is too
+long. Use 72 characters or fewer."
 
 ### Links in emails
 
 - `{FRONTEND_URL}/reset-password?token=…` (30 minutes, single use)
 - `{FRONTEND_URL}/verify-email?token=…` (24 hours, single use)
 
-### Sign-up fields
+### Legal versions
 
-| Field | Rule / message |
-| --- | --- |
-| `name` | 2–80 characters. "Enter your name (2 to 80 characters)." |
-| `email` | valid email, stored lowercase. "Enter a valid email address." |
-| `acceptedTerms` | must be `true`. "Please accept the Terms and Privacy Policy to continue." |
-| `acceptedTermsVersion` | non-empty, ≤ 32 chars; must equal `CURRENT_TERMS_VERSION` when set. |
-| `schoolId` / `campus` | optional; id or exact name from `GET /api/schools`. "Choose your school from the list." |
-| `username` | optional, 3–30 of letters/numbers/`.`/`_`; generated from the email if omitted. |
+`GET /legal/versions` (public, no auth, `Cache-Control: public, max-age=300`):
+
+```json
+{ "termsVersion": "2026-11-01", "privacyVersion": "2026-11-01",
+  "termsUrl": "https://…/terms", "privacyUrl": "https://…/privacy" }
+```
+
+Source of truth: `src/config/legal.ts` (`TERMS_VERSION`, `PRIVACY_VERSION`).
+
+### Sign-up fields (H1)
+
+Field names match the sign-up form. Every problem comes back at once in
+`error.fields`; a field the client did not send (such as `name`) is never
+mentioned.
+
+| Field | Rule | Message (`fields.<field>`) |
+| --- | --- | --- |
+| `email` | valid email, stored lowercase | "Enter a valid email address." · 409 "An account with this email already exists. Log in instead." |
+| `username` | required; trimmed; 2–30 of letters, numbers, `.`, `_`; unique ignoring case. Public: shown to other users (chat, listings, blocks). | "Choose a username." · "Usernames are 2 to 30 letters, numbers, dots or underscores." · "That username is taken. Try another one." |
+| `name` | optional, 2–80 characters; defaults to the username | "Enter your name (2 to 80 characters)." (only if sent) |
+| `password` | at least 8 characters, including a number (exactly the form's rule); at most 72 bytes | "Enter a password." · "Use at least 8 characters, including a number." · "That password is too long. Use 72 characters or fewer." |
+| `confirmPassword` | optional; when sent must equal `password` | "Those passwords don't match." |
+| `campus` | optional; school id or name/short name from `GET /api/schools`; stored as the school id (`user.signupSchoolId`) | "Choose your school from the list." |
+| `schoolId` | optional alternative to `campus` (id only) | "Choose your school from the list." |
+| `acceptedTerms` | must be `true` | "Please accept the Terms and Privacy Policy to continue." |
+| `acceptedTermsVersion` | must equal `termsVersion` from `GET /legal/versions`; checked only when `acceptedTerms` is `true` | "We updated our Terms. Please review them and try again." |
+
+On success the user stores `acceptedTermsVersion`/`acceptedTermsAt` and
+`acceptedPrivacyVersion`/`acceptedPrivacyAt` (one checkbox covers both).
+
+When the terms version is the only problem the response is:
+
+```json
+{
+  "error": {
+    "code": "TERMS_VERSION_MISMATCH",
+    "message": "We updated our Terms. Please review them and try again.",
+    "fields": { "acceptedTermsVersion": "We updated our Terms. Please review them and try again." },
+    "details": { "termsVersion": "2026-11-01", "privacyVersion": "2026-11-01",
+                 "termsUrl": "https://…/terms", "privacyUrl": "https://…/privacy" }
+  }
+}
+```
+
+Show the new terms, then retry with `details.termsVersion`. If other fields
+also fail, the code is `VALIDATION_FAILED` with all fields (and `details`).
+
+The legacy top-level `message` (kept for one release) is a list of the field
+messages; clients must not join it into one sentence. Use `error.fields`.
 
 User objects never contain password hashes, token hashes or internal flags.
 

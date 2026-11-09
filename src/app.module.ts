@@ -26,6 +26,7 @@ import { AppCacheModule } from './common/cache/cache.module';
 import { HealthModule } from './health/health.module';
 import { BootstrapModule } from './bootstrap/bootstrap.module';
 import { AnalyticsModule } from './analytics/analytics.module';
+import { LegalModule } from './legal/legal.module';
 
 @Module({
   imports: [
@@ -84,6 +85,7 @@ import { AnalyticsModule } from './analytics/analytics.module';
     EmailModule,
     HealthModule,
     AuthModule,
+    LegalModule,
     UsersModule,
     ProductsModule,
     WishlistModule,

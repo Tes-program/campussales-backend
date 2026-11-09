@@ -14,6 +14,8 @@ export interface AppErrorPayload {
   fields?: FieldErrors;
   /** Only on 429s. Also sent as the Retry-After header. */
   retryAfterSeconds?: number;
+  /** Extra machine-readable context (e.g. current legal versions). Never internal ids. */
+  details?: Record<string, unknown>;
 }
 
 export class AppError extends HttpException {
@@ -21,7 +23,10 @@ export class AppError extends HttpException {
     code: ErrorCode,
     message?: string,
     fields?: FieldErrors,
-    extra: { retryAfterSeconds?: number } = {},
+    extra: {
+      retryAfterSeconds?: number;
+      details?: Record<string, unknown>;
+    } = {},
   ) {
     const payload: AppErrorPayload = {
       code,
@@ -30,6 +35,7 @@ export class AppError extends HttpException {
       ...(extra.retryAfterSeconds !== undefined
         ? { retryAfterSeconds: Math.max(1, Math.ceil(extra.retryAfterSeconds)) }
         : {}),
+      ...(extra.details ? { details: extra.details } : {}),
     };
     super(payload, ERROR_CODE_STATUS[code]);
   }

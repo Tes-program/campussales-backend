@@ -21,8 +21,6 @@ import {
   ApiTags,
 } from '@nestjs/swagger';
 import type { Request, Response } from 'express';
-import { runSchema } from '../common/validation/run-schema';
-import { ValidationFailed } from '../common/errors/app-errors';
 import { User } from '../users/entities/user.entity';
 import { toPublicUser } from '../users/user.service';
 import {
@@ -38,7 +36,7 @@ import { ForgotPasswordDto } from './dto/forgot-password.dto';
 import { LoginDto } from './dto/login.dto';
 import { RefreshTokenDto } from './dto/refresh-token.dto';
 import { ResetPasswordDto } from './dto/reset-password.dto';
-import { LegacyRegisterDto, SignupDto } from './dto/signup.dto';
+import { SignupDto } from './dto/signup.dto';
 import { VerifyEmailDto } from './dto/verify-email.dto';
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
 
@@ -60,10 +58,12 @@ export class AuthController {
 
   @Post('signup')
   @ApiOperation({ summary: 'Create an account. Sets the refresh cookie.' })
+  @ApiBody({ type: SignupDto })
   @ApiResponse({ status: 201, description: '{ accessToken, expiresIn, user }' })
   @ApiResponse({
     status: 400,
-    description: 'VALIDATION_FAILED (e.g. fields.acceptedTerms)',
+    description:
+      'VALIDATION_FAILED with every problem in error.fields, or TERMS_VERSION_MISMATCH (fields.acceptedTermsVersion, current versions in error.details)',
   })
   @ApiResponse({
     status: 409,
@@ -71,42 +71,38 @@ export class AuthController {
   })
   @ApiResponse({ status: 429, description: 'RATE_LIMITED' })
   async signup(
-    @Body() dto: SignupDto,
+    // Validated inside AuthService.signup so sync rules and lookups
+    // (username taken, unknown campus) are reported together.
+    @Body() body: Record<string, unknown>,
     @Req() req: Request,
     @Res({ passthrough: true }) res: Response,
   ) {
     return this.sessionResponse(
       res,
-      await this.authService.signup(dto, ctxOf(req)),
+      await this.authService.signup(body ?? {}, ctxOf(req)),
     );
   }
 
   /**
-   * @deprecated Used by the deployed frontend. While AUTH_LEGACY_TOKENS=true
-   * it accepts the old body ({ email, password, username }) without terms;
-   * otherwise it behaves exactly like /auth/signup.
+   * Used by the deployed frontend. Same contract as /auth/signup; while
+   * AUTH_LEGACY_TOKENS=true the terms fields may be omitted.
    */
   @Post('register')
   @ApiOperation({
-    summary: 'Deprecated alias of /auth/signup',
+    summary: 'Alias of /auth/signup (used by the deployed frontend)',
     deprecated: true,
   })
-  @ApiBody({ type: LegacyRegisterDto })
+  @ApiBody({ type: SignupDto })
   async register(
     @Body() body: Record<string, unknown>,
     @Req() req: Request,
     @Res({ passthrough: true }) res: Response,
   ) {
-    const { value, fields, ok } = legacyTokensEnabled(this.config)
-      ? await runSchema<SignupDto | LegacyRegisterDto>(
-          LegacyRegisterDto,
-          body ?? {},
-        )
-      : await runSchema<SignupDto | LegacyRegisterDto>(SignupDto, body ?? {});
-    if (!ok) throw new ValidationFailed(fields);
     return this.sessionResponse(
       res,
-      await this.authService.signup(value, ctxOf(req)),
+      await this.authService.signup(body ?? {}, ctxOf(req), {
+        legacy: legacyTokensEnabled(this.config),
+      }),
     );
   }
 

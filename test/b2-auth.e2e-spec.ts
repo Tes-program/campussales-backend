@@ -62,6 +62,7 @@ describe('B2 auth and tokens (e2e)', () => {
       .set('X-Forwarded-For', ip)
       .send({
         name: 'Ada Okafor',
+        username: `ada_${randomUUID().slice(0, 8)}`,
         email: email(),
         password: PW,
         acceptedTerms: true,
@@ -117,25 +118,19 @@ describe('B2 auth and tokens (e2e)', () => {
       expect(f.body.error.fields.acceptedTerms).toBeDefined();
     });
 
-    it('applies the shared password rule', async () => {
-      const e = email();
+    it('applies the shared password rule (the form rule, no stricter)', async () => {
       const cases: [string, string][] = [
-        ['short1', 'Use at least 8 characters.'],
-        ['onlyletters', 'Use at least one letter and one number.'],
-        [
-          'password1',
-          'That password is too common. Pick something harder to guess.',
-        ],
-        [
-          `${e.split('@')[0]}9`,
-          "Don't use your email or name in your password.",
-        ],
-        ['AdaOkafor2026', "Don't use your email or name in your password."],
+        ['short1', 'Use at least 8 characters, including a number.'],
+        ['onlyletters', 'Use at least 8 characters, including a number.'],
       ];
       for (const [password, message] of cases) {
-        const res = await signup({ email: e, password });
+        const res = await signup({ password });
         expect(res.status).toBe(400);
         expect(res.body.error.fields.password).toBe(message);
+      }
+      // Rules the form never showed are no longer enforced.
+      for (const password of ['12345678', 'password1', 'AdaOkafor2026']) {
+        expect((await signup({ password })).status).toBe(201);
       }
     });
 
@@ -399,7 +394,7 @@ describe('B2 auth and tokens (e2e)', () => {
         .post('/api/auth/reset-password')
         .send({ token, newPassword: 'abc' });
       expect(weak.body.error.fields.newPassword).toBe(
-        'Use at least 8 characters.',
+        'Use at least 8 characters, including a number.',
       );
 
       const ok = await http()
