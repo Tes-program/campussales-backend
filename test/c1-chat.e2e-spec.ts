@@ -25,6 +25,8 @@ describe('C1 real-time, reliable chat (e2e)', () => {
   type U = Awaited<ReturnType<typeof ctx.createUser>>;
 
   beforeAll(async () => {
+    // Short auth grace so the "no refresh -> disconnect" path is testable.
+    process.env.CHAT_AUTH_GRACE_MS = '600';
     ctx = await createTestApp();
     ({ app, ds } = ctx);
     await app.listen(0);
@@ -57,8 +59,32 @@ describe('C1 real-time, reliable chat (e2e)', () => {
     return new Promise((resolve, reject) => {
       s.once('connected', () => resolve(s));
       s.once('connect_error', reject);
+      s.once('auth:expired', (e: { reason: string }) =>
+        reject(Object.assign(new Error('UNAUTHENTICATED'), e)),
+      );
     });
   }
+  /** Raw socket (no wait), for the auth flows. */
+  function rawSocket(
+    auth: Record<string, unknown> | ((cb: (d: object) => void) => void),
+    opts: Record<string, unknown> = {},
+  ) {
+    const s = io(url, {
+      auth,
+      transports: ['websocket'],
+      reconnection: false,
+      forceNew: true,
+      ...opts,
+    });
+    sockets.push(s);
+    return s;
+  }
+  const signed = (u: U, payload: Record<string, unknown> = {}) =>
+    new JwtService({ secret: process.env.JWT_SECRET }).sign({
+      sub: u.user.id,
+      email: u.user.email,
+      ...payload,
+    });
   const next = <T = any>(s: Socket, event: string, ms = 2000) =>
     new Promise<T>((resolve, reject) => {
       const t = setTimeout(() => reject(new Error(`no ${event}`)), ms);
@@ -458,15 +484,16 @@ describe('C1 real-time, reliable chat (e2e)', () => {
   // ─────────────────────────────── real time ─────────────────────────────
 
   describe('real time', () => {
-    it('rejects sockets without a valid token', async () => {
+    it('never joins a room without a valid token (auth:expired, then disconnect)', async () => {
       await expect(connect('not-a-token')).rejects.toMatchObject({
-        message: 'UNAUTHENTICATED',
+        code: 'UNAUTHENTICATED',
+        reason: 'invalid',
       });
       const ghost = new JwtService({ secret: process.env.JWT_SECRET }).sign({
         sub: randomUUID(),
       });
       await expect(connect(ghost)).rejects.toMatchObject({
-        message: 'UNAUTHENTICATED',
+        reason: 'revoked',
       });
     });
 
@@ -780,6 +807,195 @@ describe('C1 real-time, reliable chat (e2e)', () => {
         [m.id],
       );
       expect(row).toEqual({ targetType: 'message', targetUserId: a.user.id });
+    });
+  });
+
+  // ───────────────────── Part 0: recoverable auth, compat ─────────────────
+
+  describe('Part 0: recoverable socket auth and backwards compatibility', () => {
+    it('a bad handshake token gets auth:expired, refuses events, and disconnects after the grace period', async () => {
+      const s = rawSocket({ token: 'garbage' });
+      const expired = await next<any>(s, 'auth:expired');
+      expect(expired).toEqual({
+        code: 'UNAUTHENTICATED',
+        reason: 'invalid',
+        message: 'Please log in to continue.',
+        graceMs: 600,
+      });
+      expect(s.connected).toBe(true);
+      const ack = await emit(s, 'message:send', {
+        conversationId: randomUUID(),
+        clientMessageId: 'c-1',
+        text: 'hi',
+      });
+      expect(ack.error).toMatchObject({
+        code: 'UNAUTHENTICATED',
+        clientMessageId: 'c-1',
+      });
+      const failed = next<any>(s, 'auth:failed');
+      const gone = next<string>(s, 'disconnect');
+      expect(await failed).toMatchObject({
+        code: 'UNAUTHENTICATED',
+        reason: 'invalid',
+      });
+      expect(await gone).toBe('io server disconnect');
+    });
+
+    it('an expired handshake token recovers with auth:refresh and then receives messages', async () => {
+      const a = await student();
+      const b = await student();
+      const c = await chat(a, b);
+      const s = rawSocket({
+        token: signed(b, { exp: Math.floor(Date.now() / 1000) - 5 }),
+      });
+      expect((await next<any>(s, 'auth:expired')).reason).toBe('expired');
+      const bad = await emit(s, 'auth:refresh', { token: 'nope' });
+      expect(bad).toMatchObject({
+        ok: false,
+        error: { code: 'UNAUTHENTICATED', reason: 'invalid' },
+      });
+      const connected = next<any>(s, 'connected');
+      const ok = await emit(s, 'auth:refresh', { token: token(b) });
+      expect(ok).toEqual({
+        ok: true,
+        data: { userId: b.user.id, expiresAt: null },
+      });
+      expect((await connected).userId).toBe(b.user.id);
+      await new Promise((r) => setTimeout(r, 800)); // past the grace period
+      expect(s.connected).toBe(true);
+      const incoming = next<any>(s, 'message:new');
+      await send(a, c.id, {
+        clientMessageId: randomUUID(),
+        text: 'after refresh',
+      });
+      expect((await incoming).text).toBe('after refresh');
+    });
+
+    it('a live socket whose token expires keeps its connection while it refreshes', async () => {
+      const a = await student();
+      const b = await student();
+      const c = await chat(a, b);
+      const s = rawSocket({
+        token: signed(a, { exp: Math.floor(Date.now() / 1000) + 1 }),
+      });
+      await next(s, 'connected');
+      const expired = await next<any>(s, 'auth:expired', 3000);
+      expect(expired).toMatchObject({ reason: 'expired', graceMs: 600 });
+      const refused = await emit(s, 'message:send', {
+        conversationId: c.id,
+        clientMessageId: 'late-1',
+        text: 'hi',
+      });
+      expect(refused.error).toMatchObject({
+        code: 'UNAUTHENTICATED',
+        clientMessageId: 'late-1',
+      });
+      // someone else's token can't take over the socket
+      const other = await emit(s, 'auth:refresh', { token: token(b) });
+      expect(other.error.code).toBe('FORBIDDEN');
+      const fresh = signed(a, { exp: Math.floor(Date.now() / 1000) + 3600 });
+      const ok = await emit(s, 'auth:refresh', { token: `Bearer ${fresh}` });
+      expect(ok.ok).toBe(true);
+      expect(Date.parse(ok.data.expiresAt)).toBeGreaterThan(Date.now());
+      await new Promise((r) => setTimeout(r, 800));
+      expect(s.connected).toBe(true);
+      const sent = await emit(s, 'message:send', {
+        conversationId: c.id,
+        clientMessageId: 'late-1',
+        text: 'hi',
+      });
+      expect(sent).toMatchObject({ ok: true, data: { created: true } });
+    }, 15000);
+
+    it('reconnects use the newest token from the auth callback', async () => {
+      const a = await student();
+      let current = 'stale-token';
+      const s = rawSocket((cb) => cb({ token: current }), {
+        reconnection: true,
+        reconnectionDelay: 50,
+        reconnectionDelayMax: 50,
+      });
+      await next(s, 'auth:expired');
+      current = token(a);
+      const connected = next<any>(s, 'connected');
+      s.io.engine.close(); // network drop: the client reconnects by itself
+      expect((await connected).userId).toBe(a.user.id);
+    });
+
+    it('message:error and failed acks carry the clientMessageId and conversationId', async () => {
+      const a = await student();
+      const b = await student();
+      const c = await chat(a, b);
+      const s = await connect(a);
+      const errEvent = next<any>(s, 'message:error');
+      const ack = await emit(s, 'message:send', {
+        conversationId: c.id,
+        clientMessageId: 'too-long-1',
+        text: 'x'.repeat(1001),
+      });
+      expect(ack.error).toMatchObject({
+        code: 'TOO_LONG',
+        conversationId: c.id,
+        clientMessageId: 'too-long-1',
+      });
+      expect(await errEvent).toMatchObject({
+        code: 'TOO_LONG',
+        conversationId: c.id,
+        clientMessageId: 'too-long-1',
+        message: 'Messages can be up to 1000 characters.',
+        error: 'Messages can be up to 1000 characters.',
+      });
+      const nf = next<any>(s, 'message:error');
+      await emit(s, 'message:send', {
+        conversationId: randomUUID(),
+        clientMessageId: 'nf-1',
+        text: 'hi',
+      });
+      expect(await nf).toMatchObject({
+        code: 'CONVERSATION_NOT_FOUND',
+        clientMessageId: 'nf-1',
+      });
+    });
+
+    it('message types are case-insensitive and returned lowercase; clientMessageId stays optional', async () => {
+      const a = await student();
+      const b = await student();
+      const c = await chat(a, b);
+      const upper = await send(a, c.id, { content: 'hi', type: 'TEXT' });
+      expect(upper.status).toBe(201);
+      expect(upper.body).toMatchObject({
+        type: 'text',
+        text: 'hi',
+        content: 'hi',
+        clientMessageId: null,
+      });
+      const again = await send(a, c.id, { content: 'hi', type: 'TEXT' });
+      expect(again.status).toBe(201);
+      expect(again.body.id).not.toBe(upper.body.id);
+      const bogus = await send(a, c.id, { text: 'hi', type: 'Video' });
+      expect(bogus.status).toBe(400);
+      expect(bogus.body.error.fields.type).toBe('Choose text or image.');
+      const legacyImage = await send(a, c.id, {
+        content:
+          'https://res.cloudinary.com/campussales-test/image/upload/v1/x.jpg',
+        type: 'IMAGE',
+      });
+      expect(legacyImage.body.type).toBe('image');
+
+      // the old socket payload: content + uppercase type, no clientMessageId
+      const s = await connect(a);
+      const ack = await emit(s, 'message:send', {
+        conversationId: c.id,
+        content: 'old client',
+        type: 'Text',
+      });
+      expect(ack).toMatchObject({
+        ok: true,
+        data: {
+          created: true,
+          message: { type: 'text', text: 'old client', clientMessageId: null },
+        },
+      });
     });
   });
 

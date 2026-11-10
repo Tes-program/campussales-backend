@@ -1,5 +1,8 @@
 # Chat (C1): real-time, reliable
 
+> The exact request/response shapes, error codes and event names live in
+> **[chat-contract.md](chat-contract.md)**, which the frontend builds against. This file explains the design and operations.
+
 All paths are under `/api`, and every route needs `Authorization: Bearer <access token>`.
 Times are ISO 8601 UTC. Errors use the standard `{ error: { code, message, fields?, retryAfterSeconds? } }` shape.
 Chat payloads never include an email address or phone number.
@@ -105,11 +108,16 @@ Metadata (EXIF and GPS) is stripped: the incoming transformation re-encodes the 
 
 ## 3. Socket.IO
 
-Connect with `io(API_URL + "/chat", { auth: { token: accessToken }, transports: ["websocket"] })`. Notes:
-- A bad or expired token fails with `connect_error` whose message is `UNAUTHENTICATED`.
-- When the token expires mid-session, the server emits `auth:expired` and disconnects. Refresh the token, then reconnect.
-- On connect, the server emits `connected { userId, serverTime, heartbeatMs }`.
-- Socket.IO pings every 25 s. `heartbeat` (acked with `serverTime`) is available for clock sync.
+Connect with `io(API_URL + "/chat", { auth: (cb) => cb({ token: latestAccessToken() }), transports: ["websocket"] })`.
+The callback form makes every reconnect send the newest token.
+
+Auth is **recoverable**. A missing, invalid or expired token (at connect, or when a live token expires) never closes the socket straight away:
+- The server emits `auth:expired { reason, graceMs }` and keeps the connection open for 30 s (`CHAT_AUTH_GRACE_MS`). Other events are refused with `UNAUTHENTICATED` meanwhile.
+- `auth:refresh { token }` continues the session.
+- Without a valid token in time, the server emits `auth:failed` and disconnects.
+
+On connect, the server emits `connected { userId, serverTime, heartbeatMs }`. Socket.IO pings every 25 s, and `heartbeat` (acked with `serverTime`) is available for clock sync.
+Details are in chat-contract.md §2.
 
 Every socket joins the private room `user:<id>`. Every client → server event is acked with `{ ok: true, data }` or `{ ok: false, error: { code, message, … } }`.
 

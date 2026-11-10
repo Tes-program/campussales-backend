@@ -802,7 +802,11 @@ export class ChatService {
         senderId,
         clientMessageId: dto.clientMessageId ?? null,
         content: text,
-        type: attachments.length ? MessageType.IMAGE : MessageType.TEXT,
+        // Legacy clients sent type "image" with the photo URL as the text.
+        type:
+          attachments.length || legacyType === MessageType.IMAGE
+            ? MessageType.IMAGE
+            : MessageType.TEXT,
         attachments,
         replyToId: dto.replyToId ?? null,
         productId: dto.productId ?? null,

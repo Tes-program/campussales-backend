@@ -7,8 +7,9 @@ import {
   ValidateNested,
   Matches,
   MaxLength,
+  IsIn,
 } from 'class-validator';
-import { Type } from 'class-transformer';
+import { Transform, Type } from 'class-transformer';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
 export class AttachmentInputDto {
@@ -69,11 +70,17 @@ export class SendMessageDto {
   content?: string;
 
   @ApiPropertyOptional({
-    deprecated: true,
-    description: 'Ignored except "system", which is refused.',
+    enum: ['text', 'image'],
+    description:
+      'Optional, case-insensitive (TEXT or text). Derived from attachments when omitted; responses are always lowercase.',
   })
   @IsOptional()
-  @IsString()
+  @Transform(({ value }: { value: unknown }) =>
+    typeof value === 'string' ? value.trim().toLowerCase() : value,
+  )
+  @IsIn(['text', 'image', 'file', 'system'], {
+    message: 'Choose text or image.',
+  })
   type?: string;
 
   @ApiPropertyOptional({ deprecated: true, description: 'Use `attachments`.' })
