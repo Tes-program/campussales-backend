@@ -11,7 +11,13 @@ import {
   Post,
   HttpCode,
   HttpStatus,
+  Body,
 } from '@nestjs/common';
+import { WebPushService } from './web-push.service';
+import {
+  PushSubscriptionDto,
+  PushUnsubscribeDto,
+} from './dto/push-subscription.dto';
 import {
   ApiTags,
   ApiOperation,
@@ -32,7 +38,44 @@ import { User } from '../users/entities/user.entity';
 export class NotificationsController {
   private readonly logger = new Logger(NotificationsController.name);
 
-  constructor(private readonly notificationsService: NotificationsService) {}
+  constructor(
+    private readonly notificationsService: NotificationsService,
+    private readonly webPush: WebPushService,
+  ) {}
+
+  // ─── Web Push (C1, behind CHAT_WEB_PUSH) ───
+
+  @Get('push/public-key')
+  @ApiOperation({
+    summary:
+      'VAPID public key for PushManager.subscribe(); null when Web Push is off.',
+  })
+  pushPublicKey() {
+    return {
+      enabled: this.webPush.enabled(),
+      publicKey: this.webPush.publicKey(),
+    };
+  }
+
+  @Post('push/subscriptions')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @ApiOperation({ summary: 'Register this browser for Web Push (idempotent).' })
+  async pushSubscribe(
+    @CurrentUser() user: User,
+    @Body() dto: PushSubscriptionDto,
+  ) {
+    await this.webPush.subscribe(user.id, dto);
+  }
+
+  @Post('push/subscriptions/remove')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @ApiOperation({ summary: 'Stop Web Push for this browser (idempotent).' })
+  async pushUnsubscribe(
+    @CurrentUser() user: User,
+    @Body() dto: PushUnsubscribeDto,
+  ) {
+    await this.webPush.unsubscribe(user.id, dto.endpoint);
+  }
 
   @Get()
   @ApiOperation({ summary: 'List user notifications (paginated)' })

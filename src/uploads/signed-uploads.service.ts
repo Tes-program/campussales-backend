@@ -84,7 +84,10 @@ export class SignedUploadsService {
     for (let i = 0; i < count; i++) {
       const publicId = `${FOLDERS[kind]}/${randomUUID()}`;
       const params: Record<string, string | number> = {
-        allowed_formats: UPLOAD_RULES.formats.join(','),
+        allowed_formats: (kind === 'chat'
+          ? UPLOAD_RULES.chatFormats
+          : UPLOAD_RULES.formats
+        ).join(','),
         eager: EAGER_TRANSFORMATIONS,
         eager_async: 'true',
         public_id: publicId,
@@ -120,7 +123,8 @@ export class SignedUploadsService {
     return {
       uploads: out,
       maxBytes: UPLOAD_RULES.maxBytes,
-      formats: UPLOAD_RULES.formats,
+      formats:
+        kind === 'chat' ? UPLOAD_RULES.chatFormats : UPLOAD_RULES.formats,
     };
   }
 
@@ -201,13 +205,18 @@ export class SignedUploadsService {
         UPLOAD_RULES.tooLargeMessage,
       );
     }
-    if (!UPLOAD_RULES.formats.includes(info.format.toLowerCase())) {
+    const isChat = dto.publicId.startsWith(UPLOAD_RULES.chatFolder);
+    if (
+      !(isChat ? UPLOAD_RULES.chatFormats : UPLOAD_RULES.formats).includes(
+        info.format.toLowerCase(),
+      )
+    ) {
       await this.cloud.destroy([dto.publicId]).catch(() => undefined);
       await this.uploads.update({ id: row.id }, { status: 'deleted' });
-      throw new ValidationFailed(
-        { image: 'Use a JPG, PNG, WebP or HEIC photo.' },
-        'Use a JPG, PNG, WebP or HEIC photo.',
-      );
+      const copy = isChat
+        ? 'Use a JPG, PNG or WebP photo.'
+        : 'Use a JPG, PNG, WebP or HEIC photo.';
+      throw new ValidationFailed({ image: copy }, copy);
     }
 
     row.version = dto.version;

@@ -6,10 +6,12 @@ import { Notification } from './entities/notification.entity';
 import { NotificationsService } from './notifications.service';
 import { NotificationsController } from './notifications.controller';
 import { NotificationsGateway } from './notifications.gateway';
+import { WebPushService } from './web-push.service';
+import { PushSubscription } from './entities/push-subscription.entity';
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([Notification]),
+    TypeOrmModule.forFeature([Notification, PushSubscription]),
     JwtModule.registerAsync({
       imports: [ConfigModule],
       inject: [ConfigService],
@@ -19,7 +21,7 @@ import { NotificationsGateway } from './notifications.gateway';
     }),
   ],
   controllers: [NotificationsController],
-  providers: [NotificationsService, NotificationsGateway],
-  exports: [NotificationsService],
+  providers: [NotificationsService, NotificationsGateway, WebPushService],
+  exports: [NotificationsService, WebPushService],
 })
 export class NotificationsModule {}

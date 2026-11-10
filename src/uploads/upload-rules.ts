@@ -20,6 +20,9 @@ export const UPLOAD_RULES = {
   orphanAfterHours: 24,
   /** Images of deleted listings are kept this long (undo, disputes), then deleted. */
   deletedListingImageDays: 30,
+  /** Chat photos (C1): no HEIC, so every phone and browser can show them. */
+  chatFormats: ['jpg', 'jpeg', 'png', 'webp'] as string[],
+  chatFolder: 'campussales/chat/',
   tooLargeMessage:
     'This photo is over 3 MB. Choose a smaller photo or take a new one with your camera.',
 };

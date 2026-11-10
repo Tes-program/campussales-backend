@@ -1,6 +1,3 @@
-import { RateLimit } from '../common/rate-limit/rate-limit.decorator';
-import { EmailVerifiedGuard } from '../auth/guards/email-verified.guard';
-import { conversationView } from './chat-views';
 import {
   Controller,
   Get,
@@ -14,9 +11,7 @@ import {
   ParseUUIDPipe,
   HttpCode,
   HttpStatus,
-  Logger,
   Res,
-  NotFoundException,
 } from '@nestjs/common';
 import type { Response } from 'express';
 import {
@@ -25,8 +20,9 @@ import {
   ApiResponse,
   ApiBearerAuth,
 } from '@nestjs/swagger';
+import { RateLimit } from '../common/rate-limit/rate-limit.decorator';
+import { EmailVerifiedGuard } from '../auth/guards/email-verified.guard';
 import { ChatService } from './chat.service';
-import { ChatGateway } from './chat.gateway';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { User } from '../users/entities/user.entity';
@@ -34,17 +30,25 @@ import { CreateConversationDto } from './dto/create-conversation.dto';
 import { SendMessageDto } from './dto/send-message.dto';
 import { FilterConversationsDto } from './dto/filter-conversations.dto';
 import { FilterMessagesDto } from './dto/filter-messages.dto';
+import {
+  ChatSettingsDto,
+  ConversationSettingsDto,
+  DeleteMessageQueryDto,
+  MarkReadDto,
+  ReportMessageDto,
+} from './dto/chat-actions.dto';
+import { ReportsService } from '../moderation/reports.service';
+import { notFound } from '../common/errors/app-errors';
+import type { ReportReason } from '../moderation/report.entity';
 
 @ApiTags('Chat')
 @Controller('chat')
 @UseGuards(JwtAuthGuard)
 @ApiBearerAuth()
 export class ChatController {
-  private readonly logger = new Logger(ChatController.name);
-
   constructor(
     private readonly chatService: ChatService,
-    private readonly chatGateway: ChatGateway,
+    private readonly reports: ReportsService,
   ) {}
 
   // --- Conversations ---
@@ -52,99 +56,115 @@ export class ChatController {
   @Post('conversations')
   @RateLimit('messages')
   @UseGuards(EmailVerifiedGuard)
-  @ApiOperation({ summary: 'Create or get existing conversation' })
+  @ApiOperation({
+    summary:
+      'Find or create the conversation with a user: one per (pair, product), one general per pair',
+  })
   @ApiResponse({ status: 201, description: 'Conversation created' })
   @ApiResponse({ status: 200, description: 'Existing conversation returned' })
-  @ApiResponse({ status: 400, description: 'Invalid data' })
   async createConversation(
     @CurrentUser() user: User,
     @Body() dto: CreateConversationDto,
     @Res({ passthrough: true }) res: Response,
   ) {
-    this.logger.log(
-      `User ${user.id} creating conversation with ${dto.participantId}`,
-    );
     const { conversation, isExisting } =
       await this.chatService.createConversation(user.id, dto);
-
-    if (isExisting) {
-      res.status(HttpStatus.OK);
-    } else {
-      res.status(HttpStatus.CREATED);
-    }
-
-    return conversationView(conversation, user.id);
+    res.status(isExisting ? HttpStatus.OK : HttpStatus.CREATED);
+    return conversation;
   }
 
   @Get('conversations')
   @ApiOperation({
-    summary: 'Get user conversations with last message and unread count',
+    summary:
+      'Conversation list, newest first, cursor paginated: { items, nextCursor, totalUnread }',
   })
-  @ApiResponse({ status: 200, description: 'Conversations retrieved' })
-  async getConversations(
+  getConversations(
     @CurrentUser() user: User,
     @Query() filterDto: FilterConversationsDto,
   ) {
-    this.logger.log(`User ${user.id} fetching conversations`);
-    return await this.chatService.getConversations(user.id, filterDto);
+    return this.chatService.listConversations(user.id, filterDto);
+  }
+
+  @Get('unread')
+  @ApiOperation({
+    summary:
+      'Unread total and per-conversation counts (stored counters, one query)',
+  })
+  getUnread(@CurrentUser() user: User) {
+    return this.chatService.getUnread(user.id);
   }
 
   @Get('conversations/unread-count')
-  @ApiOperation({
-    summary: 'Get total unread message count across all conversations',
-  })
-  @ApiResponse({ status: 200, description: 'Unread count retrieved' })
+  @ApiOperation({ summary: 'Deprecated: use GET /chat/unread' })
   async getTotalUnreadCount(@CurrentUser() user: User) {
-    const count = await this.chatService.getTotalUnreadCount(user.id);
-    return { unreadCount: count };
+    return {
+      unreadCount: await this.chatService.getTotalUnreadCount(user.id),
+    };
+  }
+
+  @Get('settings')
+  @ApiOperation({ summary: 'Chat privacy settings (presence)' })
+  getSettings(@CurrentUser() user: User) {
+    return this.chatService.getSettings(user.id);
+  }
+
+  @Patch('settings')
+  @ApiOperation({ summary: 'Show or hide your online status in chat' })
+  updateSettings(@CurrentUser() user: User, @Body() dto: ChatSettingsDto) {
+    return this.chatService.updateChatSettings(user.id, dto.showPresence);
   }
 
   @Get('conversations/find')
   @ApiOperation({
-    summary: 'Find existing conversation with a user without creating one',
+    summary:
+      'Find the conversation with a user (and product) without creating one',
   })
-  @ApiResponse({ status: 200, description: 'Conversation found' })
-  @ApiResponse({ status: 404, description: 'Conversation not found' })
+  @ApiResponse({ status: 404, description: 'No conversation yet' })
   async findConversation(
     @CurrentUser() user: User,
     @Query('participantId', ParseUUIDPipe) participantId: string,
+    @Query('productId', new ParseUUIDPipe({ optional: true }))
+    productId?: string,
   ) {
     const conversation = await this.chatService.findExistingConversation(
       user.id,
       participantId,
+      productId,
     );
-    if (!conversation) {
-      throw new NotFoundException('Conversation not found');
-    }
-    return conversationView(conversation, user.id);
+    if (!conversation) throw notFound("You haven't chatted yet.");
+    return conversation;
   }
 
   @Get('conversations/:id')
-  @ApiOperation({ summary: 'Get conversation by ID' })
-  @ApiResponse({ status: 200, description: 'Conversation found' })
-  @ApiResponse({ status: 404, description: 'Conversation not found' })
-  @ApiResponse({ status: 403, description: 'Not a participant' })
-  async getConversation(
+  @ApiOperation({ summary: 'One conversation (same shape as a list item)' })
+  getConversation(
     @CurrentUser() user: User,
     @Param('id', ParseUUIDPipe) id: string,
   ) {
-    return conversationView(
-      await this.chatService.getConversationById(id, user.id),
-      user.id,
-    );
+    return this.chatService.getConversation(id, user.id);
+  }
+
+  @Patch('conversations/:id')
+  @ApiOperation({ summary: 'Archive / mute for you' })
+  updateConversation(
+    @CurrentUser() user: User,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: ConversationSettingsDto,
+  ) {
+    return this.chatService.updateSettings(id, user.id, dto);
   }
 
   @Delete('conversations/:id')
   @HttpCode(HttpStatus.NO_CONTENT)
-  @ApiOperation({ summary: 'Delete conversation' })
-  @ApiResponse({ status: 204, description: 'Conversation deleted' })
-  @ApiResponse({ status: 404, description: 'Conversation not found' })
+  @ApiOperation({
+    summary:
+      'Delete the chat for you only (the other person keeps it). It comes back on a new message.',
+  })
   async deleteConversation(
     @CurrentUser() user: User,
     @Param('id', ParseUUIDPipe) id: string,
   ) {
-    this.logger.log(`User ${user.id} deleting conversation ${id}`);
-    await this.chatService.deleteConversation(id, user.id);
+    await this.chatService.clearConversation(id, user.id);
   }
 
   // --- Messages ---
@@ -152,73 +172,120 @@ export class ChatController {
   @Get('conversations/:id/messages')
   @ApiOperation({
     summary:
-      'Get messages in a conversation (newest first, reversed for display)',
+      'History newest last (limit 30, beforeSeq for older) or resume with afterSeq',
   })
-  @ApiResponse({ status: 200, description: 'Messages retrieved' })
-  @ApiResponse({ status: 404, description: 'Conversation not found' })
-  async getMessages(
+  getMessages(
     @CurrentUser() user: User,
     @Param('id', ParseUUIDPipe) id: string,
     @Query() filterDto: FilterMessagesDto,
   ) {
-    return await this.chatService.getMessages(id, user.id, filterDto);
+    return this.chatService.getMessages(id, user.id, filterDto);
   }
 
   @Post('conversations/:id/messages')
   @RateLimit('messages')
   @UseGuards(EmailVerifiedGuard)
-  @ApiOperation({ summary: 'Send a message in a conversation' })
-  @ApiResponse({ status: 201, description: 'Message sent' })
-  @ApiResponse({ status: 404, description: 'Conversation not found' })
-  @ApiResponse({ status: 403, description: 'Not a participant' })
+  @ApiOperation({
+    summary:
+      'Send { clientMessageId, text, attachments? }. Idempotent on clientMessageId (200 with the original).',
+  })
+  @ApiResponse({ status: 201, description: 'Message saved' })
+  @ApiResponse({
+    status: 200,
+    description: 'Same clientMessageId as before: the original message',
+  })
   async sendMessage(
     @CurrentUser() user: User,
     @Param('id', ParseUUIDPipe) id: string,
     @Body() dto: SendMessageDto,
+    @Res({ passthrough: true }) res: Response,
   ) {
-    this.logger.log(`User ${user.id} sending message in conversation ${id}`);
-    const message = await this.chatService.sendMessage(id, user.id, dto);
-
-    // Also emit via WebSocket so other participants see it in real-time
-    this.chatGateway.emitNewMessage(id, message);
-    await this.chatGateway.emitMessageNotification(id, user.id, message);
-
+    const { message, created } = await this.chatService.sendMessage(
+      id,
+      user.id,
+      dto,
+      { via: 'http' },
+    );
+    res.status(created ? HttpStatus.CREATED : HttpStatus.OK);
     return message;
+  }
+
+  @Delete('conversations/:id/messages/:messageId')
+  @ApiOperation({
+    summary:
+      'Delete for me (default) or for everyone (?for=everyone, own message within 10 minutes)',
+  })
+  deleteMessage(
+    @CurrentUser() user: User,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Param('messageId', ParseUUIDPipe) messageId: string,
+    @Query() q: DeleteMessageQueryDto,
+  ) {
+    return this.chatService.deleteMessage(id, messageId, user.id, q.for);
+  }
+
+  @Post('conversations/:id/messages/:messageId/report')
+  @RateLimit('reports')
+  @ApiOperation({ summary: 'Report a message (B4 reports queue)' })
+  async reportMessage(
+    @CurrentUser() user: User,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Param('messageId', ParseUUIDPipe) messageId: string,
+    @Body() dto: ReportMessageDto,
+  ) {
+    // Same participant check as every chat route (404 otherwise).
+    await this.chatService.getConversation(id, user.id);
+    return this.reports.create(user, {
+      targetType: 'message',
+      targetId: messageId,
+      reason: dto.reason as ReportReason,
+      details: dto.details ?? null,
+    });
   }
 
   // --- Read receipts ---
 
+  @Post('conversations/:id/read')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary:
+      'Mark read up to upToSeq (default: everything). Idempotent. Returns the new unread counts.',
+  })
+  markRead(
+    @CurrentUser() user: User,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: MarkReadDto,
+  ) {
+    return this.chatService.markRead(id, user.id, dto?.upToSeq);
+  }
+
   @Patch('conversations/:id/read')
   @HttpCode(HttpStatus.NO_CONTENT)
-  @ApiOperation({ summary: 'Mark all messages in conversation as read' })
-  @ApiResponse({ status: 204, description: 'Messages marked as read' })
-  async markAsRead(
+  @ApiOperation({ summary: 'Deprecated: use POST …/read' })
+  async markAsReadLegacy(
     @CurrentUser() user: User,
     @Param('id', ParseUUIDPipe) id: string,
   ) {
-    this.logger.log(`User ${user.id} marking conversation ${id} as read`);
-    await this.chatService.markAsRead(id, user.id);
+    await this.chatService.markRead(id, user.id);
   }
 
   // --- Message search ---
 
   @Get('conversations/:id/messages/search')
   @ApiOperation({ summary: 'Search messages within a conversation' })
-  @ApiResponse({ status: 200, description: 'Search results returned' })
-  @ApiResponse({ status: 404, description: 'Conversation not found' })
-  async searchMessages(
+  searchMessages(
     @CurrentUser() user: User,
     @Param('id', ParseUUIDPipe) id: string,
     @Query('q') searchTerm: string,
-    @Query('page') page?: number,
-    @Query('limit') limit?: number,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
   ) {
-    return await this.chatService.searchMessages(
+    return this.chatService.searchMessages(
       id,
       user.id,
-      searchTerm || '',
-      page ? Number(page) : 1,
-      limit ? Number(limit) : 20,
+      (searchTerm || '').slice(0, 100),
+      Math.max(1, Number(page) || 1),
+      Math.min(50, Math.max(1, Number(limit) || 20)),
     );
   }
 }

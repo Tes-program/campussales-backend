@@ -652,6 +652,11 @@ Messaging or starting a chat with a blocked user (either direction): **403
 
 ### Chat
 
+> **Superseded by C1:** see [chat.md](chat.md) for the current chat
+> contract (per-product conversations, `seq`, idempotent send, sockets,
+> receipts). The B4 notes below still hold for the legacy fields kept for
+> one release.
+
 - Conversations: `{ id, type, participants[{ userId, lastReadAt, user }],
   otherUser, listing: { productId, title, coverImageUrl, priceAtStart },
   closed, closedAt, closedReason, createdAt, updatedAt }`. No email or phone.

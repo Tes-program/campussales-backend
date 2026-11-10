@@ -26,6 +26,6 @@ import { ReportsService } from './reports.service';
     AdminGuard,
     MaintenanceService,
   ],
-  exports: [ModerationService, MaintenanceService],
+  exports: [ModerationService, MaintenanceService, ReportsService],
 })
 export class ModerationModule {}

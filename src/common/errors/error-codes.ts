@@ -34,6 +34,11 @@ export enum ErrorCode {
   // H1
   /** 400: sign-up sent an outdated (or no) acceptedTermsVersion. error.details has the current versions. */
   TERMS_VERSION_MISMATCH = 'TERMS_VERSION_MISMATCH',
+  // C1 chat
+  /** 400: a chat message is over 1000 characters. fields.text has the copy. */
+  TOO_LONG = 'TOO_LONG',
+  /** 404: the conversation does not exist or the caller is not in it. */
+  CONVERSATION_NOT_FOUND = 'CONVERSATION_NOT_FOUND',
 }
 
 export const ERROR_CODE_STATUS: Record<ErrorCode, number> = {
@@ -53,6 +58,8 @@ export const ERROR_CODE_STATUS: Record<ErrorCode, number> = {
   [ErrorCode.ACCOUNT_SUSPENDED]: HttpStatus.FORBIDDEN,
   [ErrorCode.TIMEOUT]: HttpStatus.GATEWAY_TIMEOUT,
   [ErrorCode.TERMS_VERSION_MISMATCH]: HttpStatus.BAD_REQUEST,
+  [ErrorCode.TOO_LONG]: HttpStatus.BAD_REQUEST,
+  [ErrorCode.CONVERSATION_NOT_FOUND]: HttpStatus.NOT_FOUND,
 };
 
 /** Maps any HTTP status to the closest contract code. */

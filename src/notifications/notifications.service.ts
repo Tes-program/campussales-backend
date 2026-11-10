@@ -195,6 +195,47 @@ export class NotificationsService {
   }
 
   /**
+   * C1: one unread in-app notification per conversation. A new message
+   * while the previous notification is still unread updates it (and moves
+   * it to the top) instead of adding another row.
+   */
+  async upsertChatMessage(
+    userId: string,
+    title: string,
+    body: string,
+    conversationId: string,
+  ): Promise<void> {
+    const raw = await this.notificationsRepository.query(
+      `UPDATE "notifications" SET title = $3, body = $4, "createdAt" = now(), "updatedAt" = now()
+        WHERE id = (SELECT id FROM "notifications"
+                     WHERE "userId" = $1 AND type = 'message' AND "isRead" = false
+                       AND metadata->>'conversationId' = $2
+                     ORDER BY "createdAt" DESC LIMIT 1)
+       RETURNING *`,
+      [userId, conversationId, title, body],
+    );
+    const rows = (Array.isArray(raw[0]) ? raw[0] : raw) as Notification[];
+    if (rows[0]) {
+      this.notificationsGateway.sendToUser(
+        userId,
+        toNotificationView({
+          ...rows[0],
+          createdAt: new Date(rows[0].createdAt),
+          readAt: rows[0].readAt ? new Date(rows[0].readAt) : null,
+        }),
+      );
+      return;
+    }
+    await this.create({
+      userId,
+      type: NotificationType.MESSAGE,
+      title,
+      body,
+      metadata: { conversationId },
+    });
+  }
+
+  /**
    * Helper: notify when a new conversation is created with a user
    */
   async notifyNewConversation(

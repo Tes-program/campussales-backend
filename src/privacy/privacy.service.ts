@@ -46,7 +46,7 @@ export class PrivacyService {
       ),
       q(`SELECT "productId", "createdAt" FROM wishlists WHERE "userId" = $1`),
       q(
-        `SELECT id, "conversationId", content, type, "createdAt" FROM messages WHERE "senderId" = $1 AND type <> 'system'`,
+        `SELECT id, "conversationId", seq, content, type, attachments, "createdAt", "deletedAt" FROM messages WHERE "senderId" = $1 AND type <> 'system' ORDER BY "conversationId", seq`,
       ),
       q(
         `SELECT id, "targetType", "targetId", reason, details, status, "createdAt" FROM reports WHERE "reporterId" = $1`,

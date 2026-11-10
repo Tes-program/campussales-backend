@@ -5,13 +5,26 @@ import {
   CreateDateColumn,
   ManyToOne,
   JoinColumn,
+  Index,
 } from 'typeorm';
 import { MessageType, MessageStatus } from '../enums/chat.enums';
 import { Conversation } from './conversation.entity';
 import { User } from '../../users/entities/user.entity';
 import { Product } from '../../products/entities/product.entity';
+import { bigintNumber } from './bigint-number';
+
+export interface MessageAttachment {
+  url: string;
+  thumbUrl?: string;
+  width?: number;
+  height?: number;
+}
 
 @Entity('messages')
+@Index('UQ_messages_conversation_seq', { synchronize: false })
+@Index('UQ_messages_client_id', { synchronize: false })
+@Index('IDX_messages_sender_created', { synchronize: false })
+@Index('IDX_messages_product', { synchronize: false })
 export class Message {
   @PrimaryGeneratedColumn('uuid')
   id: string;
@@ -22,8 +35,24 @@ export class Message {
   @Column()
   senderId: string;
 
+  /** Per-conversation sequence number: stable ordering and resume (C1). */
+  @Column({ type: 'bigint', transformer: bigintNumber })
+  seq: number;
+
+  /** Client-generated id; a retry with the same id returns the same message. */
+  @Column({ type: 'varchar', length: 64, nullable: true })
+  clientMessageId?: string | null;
+
   @Column({ type: 'text' })
   content: string;
+
+  /** Images (C1): [{ url, thumbUrl, width?, height? }]. */
+  @Column({ type: 'jsonb', default: () => "'[]'" })
+  attachments: MessageAttachment[];
+
+  /** The sender deleted it for everyone (within 10 minutes). Never hard-deleted. */
+  @Column({ type: 'timestamp', nullable: true })
+  deletedAt?: Date | null;
 
   @Column({
     type: 'enum',

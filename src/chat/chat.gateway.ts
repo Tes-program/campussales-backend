@@ -7,711 +7,597 @@ import {
   OnGatewayInit,
   ConnectedSocket,
   MessageBody,
-  WsException,
 } from '@nestjs/websockets';
-import { Logger, UsePipes, ValidationPipe } from '@nestjs/common';
-import { Server, Socket } from 'socket.io';
+import { Logger, OnModuleDestroy } from '@nestjs/common';
+import { InjectDataSource } from '@nestjs/typeorm';
+import { DataSource } from 'typeorm';
+import { Namespace, Socket } from 'socket.io';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
-import { InjectQueue } from '@nestjs/bullmq';
-import { Queue, QueueEvents } from 'bullmq';
+import { plainToInstance } from 'class-transformer';
+import { validate } from 'class-validator';
 import { ChatService } from './chat.service';
+import { ChatPresence } from './chat-presence';
+import { ChatNotifier } from './chat-notifier';
 import { SendMessageDto } from './dto/send-message.dto';
-import { MessageStatus } from './enums/chat.enums';
 import {
-  SendMessageJobData,
-  MarkReadJobData,
-  DeliveryStatusJobData,
-} from './chat.processor';
-import { FilterConversationsDto } from './dto/filter-conversations.dto';
+  chatEvents,
+  ChatMessageEvent,
+  ChatMessageUpdatedEvent,
+  ChatStatusEvent,
+  ChatUnreadEvent,
+} from './chat-events';
+import { chatMetrics, CHAT_METRIC } from './chat-metrics';
+import { metrics } from '../common/observability/metrics';
+import { socketCorsOrigin } from '../common/adapters/socket-cors';
+import { DEFAULT_MESSAGES } from '../common/errors/messages';
+import { ErrorCode } from '../common/errors/error-codes';
+import { writeJson } from '../common/observability/json-logger';
+import { hashUserId } from '../common/observability/redact';
+import { UserStatus } from '../common/enum/user.enums';
 
-interface AuthenticatedSocket extends Socket {
+interface SocketData {
   userId: string;
+  presenceVisible: boolean;
 }
+type ChatSocket = Socket & { data: SocketData };
 
+/** Ack payload for every client -> server event (same error shape as REST). */
+export type Ack<T = unknown> =
+  | { ok: true; data: T }
+  | {
+      ok: false;
+      error: {
+        code: string;
+        message: string;
+        fields?: Record<string, string>;
+        retryAfterSeconds?: number;
+      };
+    };
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+/** How long the server waits for a recipient's socket to ack message:new. */
+const DELIVERY_ACK_TIMEOUT_MS = 10_000;
+export const HEARTBEAT_INTERVAL_MS = 25_000;
+
+const userRoom = (id: string) => `user:${id}`;
+const presenceRoom = (id: string) => `presence:${id}`;
+
+/**
+ * Real-time chat (C1). Namespace /chat on the API's own port.
+ *
+ * Connect: `io(API_URL + '/chat', { auth: { token: accessToken } })`. The
+ * token is checked before the connection is accepted (connect_error
+ * `UNAUTHENTICATED` otherwise) and the socket is closed with `auth:expired`
+ * when the token expires; refresh and reconnect.
+ *
+ * Each socket joins a private room `user:<id>`; all events are addressed to
+ * users, never broadcast. Server -> client: message:new (ack it),
+ * message:status, message:updated, conversation:updated, typing, presence,
+ * unread:update, auth:expired. Client -> server (all acked with
+ * { ok, data | error }): message:send, message:delivered, message:read,
+ * typing, presence:subscribe, presence:unsubscribe, heartbeat.
+ *
+ * Several instances: main.ts installs the Redis adapter, so rooms and acks
+ * work across instances. One instance needs no adapter (in-memory).
+ */
 @WebSocketGateway({
-  cors: {
-    origin: [
-      'http://localhost:3000',
-      'http://localhost:3001',
-      'http://localhost:5173',
-    ],
-    credentials: true,
-  },
+  cors: { origin: socketCorsOrigin, credentials: true },
   namespace: '/chat',
-  pingInterval: 25000,
-  pingTimeout: 60000,
+  pingInterval: HEARTBEAT_INTERVAL_MS,
+  pingTimeout: 20_000,
   transports: ['websocket', 'polling'],
+  // Payloads are small JSON; compression costs more CPU than it saves.
+  perMessageDeflate: false,
 })
-@UsePipes(
-  new ValidationPipe({
-    whitelist: true,
-    forbidNonWhitelisted: true,
-    transform: true,
-    exceptionFactory: (errors) => {
-      const messages = errors.map((e) =>
-        Object.values(e.constraints || {}).join(', '),
-      );
-      return new WsException({ message: messages, error: 'Validation failed' });
-    },
-  }),
-)
 export class ChatGateway
-  implements OnGatewayConnection, OnGatewayDisconnect, OnGatewayInit
+  implements
+    OnGatewayInit,
+    OnGatewayConnection,
+    OnGatewayDisconnect,
+    OnModuleDestroy
 {
   @WebSocketServer()
-  server: Server;
+  server: Namespace;
 
   private readonly logger = new Logger(ChatGateway.name);
+  private readonly expiryTimers = new Map<string, NodeJS.Timeout>();
+  /** conversationId:userId -> peer id (typing), short-lived. */
+  private readonly peerCache = new Map<
+    string,
+    { peer: string | null; at: number }
+  >();
 
-  /**
-   * userId -> Set<socketId>
-   * Tracks multi-device / multi-tab connections per user.
-   */
-  private onlineUsers = new Map<string, Set<string>>();
-
-  /**
-   * Typing auto-expiry: `${conversationId}:${userId}` -> timeout handle
-   */
-  private typingTimers = new Map<string, ReturnType<typeof setTimeout>>();
-  private readonly TYPING_TIMEOUT_MS = 5000;
-
-  /**
-   * Simple per-socket rate limiter: socketId -> { count, resetAt }
-   */
-  private rateLimits = new Map<string, { count: number; resetAt: number }>();
-  private readonly RATE_LIMIT_MAX = 30; // messages per window
-  private readonly RATE_LIMIT_WINDOW_MS = 10_000; // 10 seconds
-
-  /** QueueEvents listener (initialised in afterInit) */
-  private queueEvents: QueueEvents | null = null;
+  private readonly onMessage = (e: ChatMessageEvent) => this.deliver(e);
+  private readonly onStatus = (e: ChatStatusEvent) =>
+    this.server?.to(userRoom(e.toUserId)).emit('message:status', {
+      conversationId: e.conversationId,
+      upToSeq: e.upToSeq,
+      status: e.status,
+      userId: e.byUserId,
+    });
+  private readonly onUnread = (e: ChatUnreadEvent) =>
+    this.server?.to(userRoom(e.userId)).emit('unread:update', {
+      conversationId: e.conversationId,
+      unreadCount: e.unreadCount,
+      total: e.total,
+    });
+  private readonly onUpdated = (e: ChatMessageUpdatedEvent) => {
+    for (const id of e.userIds)
+      this.server?.to(userRoom(id)).emit('message:updated', e.message);
+  };
 
   constructor(
-    private readonly jwtService: JwtService,
-    private readonly configService: ConfigService,
-    private readonly chatService: ChatService,
-    @InjectQueue('chat') private readonly chatQueue: Queue,
+    private readonly jwt: JwtService,
+    private readonly config: ConfigService,
+    private readonly chat: ChatService,
+    private readonly presence: ChatPresence,
+    private readonly notifier: ChatNotifier,
+    @InjectDataSource() private readonly ds: DataSource,
   ) {}
 
-  // ─── LIFECYCLE ───────────────────────────────────────────────
+  // ─── lifecycle ──────────────────────────────────────────────────────
 
-  afterInit() {
-    this.logger.log('Chat WebSocket gateway initialised');
-
-    // Listen for completed queue jobs and emit results via Socket.io
-    try {
-      const redisHost = this.configService.get<string>(
-        'REDIS_HOST',
-        'localhost',
-      );
-      const redisPort = this.configService.get<number>('REDIS_PORT', 6379);
-      const redisPassword = this.configService.get<string>('REDIS_PASSWORD');
-
-      this.queueEvents = new QueueEvents('chat', {
-        connection: {
-          host: redisHost,
-          port: redisPort,
-          password: redisPassword || undefined,
-        },
-      });
-
-      this.queueEvents.on('completed', ({ jobId, returnvalue }) => {
-        this.handleJobCompleted(jobId, returnvalue);
-      });
-
-      this.queueEvents.on('failed', ({ jobId, failedReason }) => {
-        this.logger.error(`Job ${jobId} failed: ${failedReason}`);
-      });
-
-      this.logger.log('Queue event listeners attached');
-    } catch (error) {
-      this.logger.error(
-        `Failed to set up queue events: ${error.message}`,
-        error.stack,
-      );
-    }
+  afterInit(nsp: Namespace) {
+    nsp.use((socket, next) => {
+      this.authenticate(socket as ChatSocket)
+        .then(() => next())
+        .catch((e: Error & { data?: unknown }) => next(e));
+    });
+    chatEvents.on('message', this.onMessage);
+    chatEvents.on('status', this.onStatus);
+    chatEvents.on('unread', this.onUnread);
+    chatEvents.on('message-updated', this.onUpdated);
   }
 
-  // ─── CONNECTION ──────────────────────────────────────────────
+  onModuleDestroy() {
+    chatEvents.off('message', this.onMessage);
+    chatEvents.off('status', this.onStatus);
+    chatEvents.off('unread', this.onUnread);
+    chatEvents.off('message-updated', this.onUpdated);
+    for (const t of this.expiryTimers.values()) clearTimeout(t);
+    this.expiryTimers.clear();
+  }
 
-  async handleConnection(client: AuthenticatedSocket) {
+  /** Same rules as the HTTP JWT strategy: valid token, active account, not signed out everywhere. */
+  private async authenticate(socket: ChatSocket): Promise<void> {
+    const fail = () => {
+      const err = new Error(ErrorCode.UNAUTHENTICATED) as Error & {
+        data: unknown;
+      };
+      err.data = {
+        code: ErrorCode.UNAUTHENTICATED,
+        message: DEFAULT_MESSAGES[ErrorCode.UNAUTHENTICATED],
+      };
+      return err;
+    };
+    const token = extractToken(socket);
+    if (!token) throw fail();
+    let payload: { sub?: string; iat?: number; exp?: number };
     try {
-      const token = this.extractToken(client);
-      if (!token) {
-        this.disconnectWithError(client, 'MISSING_TOKEN', 'No token provided');
-        return;
-      }
-
-      const payload = this.jwtService.verify(token, {
-        secret: this.configService.get<string>('JWT_SECRET'),
-      });
-      client.userId = payload.sub;
-
-      // Track online status (multi-device aware)
-      if (!this.onlineUsers.has(client.userId)) {
-        this.onlineUsers.set(client.userId, new Set());
-      }
-      this.onlineUsers.get(client.userId)!.add(client.id);
-
-      // Join personal notification room
-      await client.join(`user:${client.userId}`);
-
-      // Auto-join ALL conversation rooms this user belongs to
-      await this.autoJoinConversations(client);
-
-      // Broadcast online presence to conversation peers
-      this.broadcastPresence(client.userId, 'online');
-
-      this.logger.log(`Client connected: ${client.userId} (${client.id})`);
-
-      // Confirm connection to client with useful boot data
-      client.emit('connected', {
-        userId: client.userId,
-        socketId: client.id,
-        onlineUsers: this.getOnlineUserIds(),
+      payload = this.jwt.verify(token, {
+        secret: this.config.get<string>('JWT_SECRET'),
       });
     } catch {
-      this.disconnectWithError(
-        client,
-        'AUTH_FAILED',
-        'Invalid or expired token',
-      );
+      throw fail();
     }
-  }
-
-  handleDisconnect(client: AuthenticatedSocket) {
-    if (!client.userId) return;
-
-    const sockets = this.onlineUsers.get(client.userId);
-    if (sockets) {
-      sockets.delete(client.id);
-      if (sockets.size === 0) {
-        this.onlineUsers.delete(client.userId);
-        this.broadcastPresence(client.userId, 'offline');
-      }
+    if (!payload.sub || !UUID.test(payload.sub)) throw fail();
+    const [u] = await this.ds.query<
+      Array<{
+        status: UserStatus;
+        isActive: boolean;
+        deletionRequestedAt: Date | null;
+        tokensValidAfter: Date | null;
+        chatPresenceVisible: boolean;
+      }>
+    >(
+      `SELECT status, "isActive", "deletionRequestedAt", "tokensValidAfter", "chatPresenceVisible"
+         FROM "users" WHERE id = $1`,
+      [payload.sub],
+    );
+    if (
+      !u ||
+      u.status !== UserStatus.ACTIVE ||
+      !u.isActive ||
+      u.deletionRequestedAt ||
+      (u.tokensValidAfter &&
+        (payload.iat ?? 0) < Math.floor(u.tokensValidAfter.getTime() / 1000))
+    ) {
+      throw fail();
     }
-
-    // Clean up typing timers & rate limit state
-    this.clearAllTypingTimersForUser(client.userId);
-    this.rateLimits.delete(client.id);
-
-    this.logger.log(`Client disconnected: ${client.userId} (${client.id})`);
-  }
-
-  // ─── ROOM MANAGEMENT ────────────────────────────────────────
-
-  @SubscribeMessage('conversation:join')
-  async handleJoinConversation(
-    @ConnectedSocket() client: AuthenticatedSocket,
-    @MessageBody() data: { conversationId: string },
-  ) {
-    try {
-      if (!data?.conversationId) {
-        throw new WsException('conversationId is required');
-      }
-      // Verify participant access
-      await this.chatService.getConversationById(
-        data.conversationId,
-        client.userId,
-      );
-      await client.join(`conversation:${data.conversationId}`);
-      this.logger.debug(
-        `User ${client.userId} joined room ${data.conversationId}`,
-      );
-      return {
-        event: 'conversation:joined',
-        data: { conversationId: data.conversationId },
-      };
-    } catch (error) {
-      this.logger.error(`Join failed: ${error.message}`, error.stack);
-      throw new WsException(error.message || 'Failed to join conversation');
-    }
-  }
-
-  @SubscribeMessage('conversation:leave')
-  async handleLeaveConversation(
-    @ConnectedSocket() client: AuthenticatedSocket,
-    @MessageBody() data: { conversationId: string },
-  ) {
-    if (!data?.conversationId) {
-      throw new WsException('conversationId is required');
-    }
-    this.clearTypingTimer(data.conversationId, client.userId);
-    await client.leave(`conversation:${data.conversationId}`);
-    return {
-      event: 'conversation:left',
-      data: { conversationId: data.conversationId },
-    };
-  }
-
-  // ─── MESSAGING (queue-backed) ────────────────────────────────
-
-  @SubscribeMessage('message:send')
-  async handleSendMessage(
-    @ConnectedSocket() client: AuthenticatedSocket,
-    @MessageBody() data: { conversationId: string } & SendMessageDto,
-  ) {
-    try {
-      if (!data?.conversationId) {
-        throw new WsException('conversationId is required');
-      }
-
-      // Rate limit check
-      if (this.isRateLimited(client.id)) {
-        client.emit('message:error', {
-          conversationId: data.conversationId,
-          error: 'Rate limit exceeded. Please slow down.',
-          code: 'RATE_LIMITED',
-        });
-        return;
-      }
-
-      const { conversationId, ...messageDto } = data;
-
-      // Normalise type to lowercase (frontend may send "TEXT")
-      if (messageDto.type) {
-        messageDto.type =
-          messageDto.type.toLowerCase() as SendMessageDto['type'];
-      }
-
-      // Same checks as REST (blocks, length, 30/min) before queueing, so the
-      // sender gets the standard error code straight away.
-      try {
-        messageDto.content = await this.chatService.assertCanSend(
-          conversationId,
-          client.userId,
-          messageDto,
-        );
-      } catch (e) {
-        const res = (e as { getResponse?: () => unknown }).getResponse?.() as
-          | {
-              code?: string;
-              message?: string;
-              fields?: Record<string, string>;
-              retryAfterSeconds?: number;
-            }
-          | undefined;
-        client.emit('message:error', {
-          conversationId,
-          code: res?.code ?? 'SEND_FAILED',
-          error: res?.message ?? 'Message could not be sent.',
-          fields: res?.fields,
-          retryAfterSeconds: res?.retryAfterSeconds,
-        });
-        return;
-      }
-
-      // Enqueue the message for reliable, async processing
-      const job = await this.chatQueue.add(
-        'send-message',
-        {
-          type: 'send-message',
-          conversationId,
-          senderId: client.userId,
-          dto: messageDto,
-          socketId: client.id,
-        } satisfies SendMessageJobData,
-        {
-          attempts: 3,
-          backoff: { type: 'exponential', delay: 1000 },
-          removeOnComplete: 100,
-          removeOnFail: 500,
+    socket.data.userId = payload.sub;
+    socket.data.presenceVisible = u.chatPresenceVisible;
+    if (payload.exp) {
+      const ms = payload.exp * 1000 - Date.now();
+      const t = setTimeout(
+        () => {
+          socket.emit('auth:expired', {
+            code: ErrorCode.UNAUTHENTICATED,
+            message: 'Your session needs a refresh.',
+          });
+          socket.disconnect(true);
         },
+        Math.max(0, Math.min(ms, 2 ** 31 - 1)),
       );
-
-      // Immediately clear typing indicator
-      this.clearTypingTimer(conversationId, client.userId);
-      client.to(`conversation:${conversationId}`).emit('typing:update', {
-        conversationId,
-        userId: client.userId,
-        isTyping: false,
-      });
-
-      // Acknowledge receipt to sender (message is queued, not yet persisted)
-      return {
-        event: 'message:queued',
-        data: { jobId: job.id, conversationId },
-      };
-    } catch (error) {
-      this.logger.error(`Send failed: ${error.message}`, error.stack);
-      client.emit('message:error', {
-        conversationId: data?.conversationId,
-        error: error.message,
-        code: 'SEND_FAILED',
-      });
+      t.unref();
+      this.expiryTimers.set(socket.id, t);
     }
   }
 
-  // ─── DELIVERY & READ RECEIPTS ───────────────────────────────
-
-  @SubscribeMessage('message:delivered')
-  async handleMessageDelivered(
-    @ConnectedSocket() client: AuthenticatedSocket,
-    @MessageBody() data: { messageId: string; conversationId: string },
-  ) {
-    try {
-      if (!data?.messageId || !data?.conversationId) {
-        throw new WsException('messageId and conversationId are required');
-      }
-
-      await this.chatQueue.add(
-        'delivery-status',
-        {
-          type: 'delivery-status',
-          messageId: data.messageId,
-          conversationId: data.conversationId,
-          status: MessageStatus.DELIVERED,
-        } satisfies DeliveryStatusJobData,
-        { removeOnComplete: 50, removeOnFail: 200 },
-      );
-
-      // Optimistically broadcast status change (processor confirms DB update)
-      this.server
-        .to(`conversation:${data.conversationId}`)
-        .emit('message:status', {
-          messageId: data.messageId,
-          status: MessageStatus.DELIVERED,
-        });
-    } catch (error) {
-      this.logger.error(`Delivery status failed: ${error.message}`);
-      throw new WsException('Failed to update delivery status');
-    }
-  }
-
-  @SubscribeMessage('message:read')
-  async handleMessageRead(
-    @ConnectedSocket() client: AuthenticatedSocket,
-    @MessageBody() data: { conversationId: string },
-  ) {
-    try {
-      if (!data?.conversationId) {
-        throw new WsException('conversationId is required');
-      }
-
-      await this.chatQueue.add(
-        'mark-read',
-        {
-          type: 'mark-read',
-          conversationId: data.conversationId,
-          userId: client.userId,
-        } satisfies MarkReadJobData,
-        { removeOnComplete: 50, removeOnFail: 200 },
-      );
-
-      // Optimistically notify the sender that their messages were read
-      client.to(`conversation:${data.conversationId}`).emit('messages:read', {
-        conversationId: data.conversationId,
-        readBy: client.userId,
-        readAt: new Date().toISOString(),
-      });
-
-      return {
-        event: 'message:read:ack',
-        data: { conversationId: data.conversationId },
-      };
-    } catch (error) {
-      this.logger.error(`Mark read failed: ${error.message}`);
-      throw new WsException('Failed to mark as read');
-    }
-  }
-
-  // ─── TYPING INDICATORS ──────────────────────────────────────
-
-  @SubscribeMessage('typing:start')
-  handleTypingStart(
-    @ConnectedSocket() client: AuthenticatedSocket,
-    @MessageBody() data: { conversationId: string },
-  ) {
-    if (!data?.conversationId) return;
-
-    // Clear existing timer and reset
-    this.clearTypingTimer(data.conversationId, client.userId);
-
-    client.to(`conversation:${data.conversationId}`).emit('typing:update', {
-      conversationId: data.conversationId,
-      userId: client.userId,
-      isTyping: true,
-    });
-
-    // Auto-stop after TYPING_TIMEOUT_MS if client doesn't send typing:stop
-    const timerKey = `${data.conversationId}:${client.userId}`;
-    const timer = setTimeout(() => {
-      client.to(`conversation:${data.conversationId}`).emit('typing:update', {
-        conversationId: data.conversationId,
-        userId: client.userId,
-        isTyping: false,
-      });
-      this.typingTimers.delete(timerKey);
-    }, this.TYPING_TIMEOUT_MS);
-
-    this.typingTimers.set(timerKey, timer);
-  }
-
-  @SubscribeMessage('typing:stop')
-  handleTypingStop(
-    @ConnectedSocket() client: AuthenticatedSocket,
-    @MessageBody() data: { conversationId: string },
-  ) {
-    if (!data?.conversationId) return;
-
-    this.clearTypingTimer(data.conversationId, client.userId);
-
-    client.to(`conversation:${data.conversationId}`).emit('typing:update', {
-      conversationId: data.conversationId,
-      userId: client.userId,
-      isTyping: false,
-    });
-  }
-
-  // ─── PRESENCE ────────────────────────────────────────────────
-
-  @SubscribeMessage('user:check-online')
-  handleCheckOnline(
-    @ConnectedSocket() _client: AuthenticatedSocket,
-    @MessageBody() data: { userIds: string[] },
-  ) {
-    if (!data?.userIds || !Array.isArray(data.userIds)) {
-      throw new WsException('userIds array is required');
-    }
-
-    return data.userIds.map((id) => ({
-      userId: id,
-      isOnline: this.onlineUsers.has(id),
-    }));
-  }
-
-  // ─── PUBLIC EMITTERS (called from ChatController) ────────────
-
-  /**
-   * Push a notification payload to a specific user's personal room.
-   */
-  emitNotification(userId: string, notification: any) {
-    this.server.to(`user:${userId}`).emit('notification:new', notification);
-  }
-
-  /**
-   * Emit a new message to all sockets in a conversation room.
-   */
-  emitNewMessage(conversationId: string, message: any) {
-    this.server
-      .to(`conversation:${conversationId}`)
-      .emit('message:new', message);
-  }
-
-  /**
-   * Send a notification to participants NOT currently in the conversation room.
-   */
-  async emitMessageNotification(
-    conversationId: string,
-    senderId: string,
-    message: any,
-  ) {
-    const conversationRoom = `conversation:${conversationId}`;
-    const socketsInRoom = await this.server.in(conversationRoom).fetchSockets();
-    const userIdsInRoom = new Set(
-      socketsInRoom.map((s) => (s as unknown as AuthenticatedSocket).userId),
+  async handleConnection(client: ChatSocket) {
+    const userId = client.data.userId;
+    if (!userId) return client.disconnect(true);
+    await client.join(userRoom(userId));
+    chatMetrics.connections++;
+    metrics.count(
+      this.presence.isReconnect(userId)
+        ? CHAT_METRIC.reconnect
+        : CHAT_METRIC.connect,
     );
-
-    const conversation = await this.chatService.getConversationById(
-      conversationId,
-      senderId,
-    );
-
-    for (const participant of conversation.participants) {
-      if (
-        participant.userId !== senderId &&
-        !userIdsInRoom.has(participant.userId)
-      ) {
-        this.server
-          .to(`user:${participant.userId}`)
-          .emit('message:notification', {
-            conversationId,
-            message,
-          });
-      }
+    const cameOnline = this.presence.connect(userId, client.id);
+    if (cameOnline && client.data.presenceVisible) {
+      this.server.to(presenceRoom(userId)).emit('presence', {
+        userId,
+        online: true,
+        lastActiveAt: new Date().toISOString(),
+      });
     }
-  }
-
-  // ─── PRIVATE HELPERS ─────────────────────────────────────────
-
-  private extractToken(client: Socket): string | null {
-    const authHeader = client.handshake.headers?.authorization;
-    if (authHeader?.startsWith('Bearer ')) return authHeader.slice(7);
-    return (
-      (client.handshake.auth?.token as string) ||
-      (client.handshake.query?.token as string) ||
-      null
-    );
-  }
-
-  private disconnectWithError(client: Socket, code: string, message: string) {
-    this.logger.warn(`Disconnecting ${client.id}: ${message}`);
-    client.emit('error:auth', { code, message });
-    client.disconnect(true);
-  }
-
-  /**
-   * Auto-join all conversation rooms the user participates in.
-   * This ensures they receive messages even when they haven't opened a specific chat.
-   */
-  private async autoJoinConversations(client: AuthenticatedSocket) {
-    try {
-      const filterDto = new FilterConversationsDto();
-      filterDto.page = 1;
-      filterDto.limit = 500;
-      const result = await this.chatService.getConversations(
-        client.userId,
-        filterDto,
-      );
-      for (const conv of result.data) {
-        await client.join(`conversation:${conv.id}`);
-      }
-      this.logger.debug(
-        `User ${client.userId} auto-joined ${result.data.length} rooms`,
-      );
-    } catch (error) {
-      this.logger.error(`Auto-join failed: ${error.message}`);
-    }
-  }
-
-  /**
-   * Broadcast presence change to all conversation rooms this user is in.
-   * With the Redis adapter this works across all server instances.
-   */
-  private broadcastPresence(userId: string, status: 'online' | 'offline') {
-    const payload = {
+    client.emit('connected', {
       userId,
-      status,
-      lastSeen: status === 'offline' ? new Date().toISOString() : null,
-    };
-
-    // Emit to the user's personal room (their own tabs pick it up)
-    this.server.to(`user:${userId}`).emit('presence:update', payload);
-
-    // Also broadcast globally so any conversation partner listening gets it
-    this.server.emit('presence:update', payload);
+      serverTime: new Date().toISOString(),
+      heartbeatMs: HEARTBEAT_INTERVAL_MS,
+    });
   }
 
-  /**
-   * Simple sliding-window rate limiter per socket.
-   */
-  private isRateLimited(socketId: string): boolean {
-    const now = Date.now();
-    const entry = this.rateLimits.get(socketId);
-
-    if (!entry || now > entry.resetAt) {
-      this.rateLimits.set(socketId, {
-        count: 1,
-        resetAt: now + this.RATE_LIMIT_WINDOW_MS,
-      });
-      return false;
-    }
-
-    entry.count++;
-    return entry.count > this.RATE_LIMIT_MAX;
-  }
-
-  /**
-   * Handle completed queue jobs — emit results to Socket.io rooms.
-   */
-  private handleJobCompleted(jobId: string, returnvalue: any) {
-    try {
-      const result =
-        typeof returnvalue === 'string' ? JSON.parse(returnvalue) : returnvalue;
-
-      if (!result) return;
-
-      if (result.message && result.conversationId) {
-        // send-message job completed — broadcast to conversation room
-        this.server
-          .to(`conversation:${result.conversationId}`)
-          .emit('message:new', result.message);
-
-        // Notify offline participants via personal rooms
-        void this.notifyOfflineParticipants(
-          result.conversationId,
-          result.senderId,
-          result.message,
-        );
-
-        // Emit conversation:updated for sidebar refresh
-        this.server
-          .to(`conversation:${result.conversationId}`)
-          .emit('conversation:updated', {
-            conversationId: result.conversationId,
-            lastMessage: {
-              id: result.message.id,
-              content: result.message.content,
-              type: result.message.type,
-              senderId: result.message.senderId,
-              status: result.message.status,
-              createdAt: result.message.createdAt,
-            },
-            updatedAt: result.message.createdAt,
-          });
-      }
-    } catch (error) {
-      this.logger.error(
-        `Error handling job ${jobId} completion: ${error.message}`,
-      );
-    }
-  }
-
-  private async notifyOfflineParticipants(
-    conversationId: string,
-    senderId: string,
-    message: any,
-  ) {
-    try {
-      const conversationRoom = `conversation:${conversationId}`;
-      const socketsInRoom = await this.server
-        .in(conversationRoom)
-        .fetchSockets();
-      const userIdsInRoom = new Set(
-        socketsInRoom.map((s) => (s as unknown as AuthenticatedSocket).userId),
-      );
-
-      const conversation = await this.chatService.getConversationById(
-        conversationId,
-        senderId,
-      );
-
-      for (const p of conversation.participants) {
-        if (p.userId !== senderId && !userIdsInRoom.has(p.userId)) {
-          this.server
-            .to(`user:${p.userId}`)
-            .emit('message:notification', { conversationId, message });
-        }
-      }
-    } catch (error) {
-      this.logger.error(`Offline notification failed: ${error.message}`);
-    }
-  }
-
-  private clearTypingTimer(conversationId: string, userId: string) {
-    const timerKey = `${conversationId}:${userId}`;
-    const existing = this.typingTimers.get(timerKey);
-    if (existing) {
-      clearTimeout(existing);
-      this.typingTimers.delete(timerKey);
-    }
-  }
-
-  private clearAllTypingTimersForUser(userId: string) {
-    for (const [key, timer] of this.typingTimers.entries()) {
-      if (key.endsWith(`:${userId}`)) {
-        clearTimeout(timer);
-        this.typingTimers.delete(key);
-
+  handleDisconnect(client: ChatSocket) {
+    const t = this.expiryTimers.get(client.id);
+    if (t) clearTimeout(t);
+    this.expiryTimers.delete(client.id);
+    const userId = client.data.userId;
+    if (!userId) return;
+    chatMetrics.connections = Math.max(0, chatMetrics.connections - 1);
+    metrics.count(CHAT_METRIC.disconnect);
+    this.presence.disconnect(userId, client.id, () => {
+      this.chat.touchLastActive(userId).catch(() => undefined);
+      for (const key of this.presence.typingKeysFor(userId)) {
+        this.presence.stopTyping(key);
         const conversationId = key.split(':')[0];
-        this.server
-          .to(`conversation:${conversationId}`)
-          .emit('typing:update', { conversationId, userId, isTyping: false });
+        const peer = this.peerCache.get(key)?.peer;
+        if (peer) this.emitTyping(peer, conversationId, userId, false);
       }
+      if (client.data.presenceVisible) {
+        this.server?.to(presenceRoom(userId)).emit('presence', {
+          userId,
+          online: false,
+          lastActiveAt: new Date().toISOString(),
+        });
+      }
+    });
+  }
+
+  // ─── client -> server ───────────────────────────────────────────────
+
+  /**
+   * { conversationId, clientMessageId, text, attachments? } -> ack
+   * { ok: true, data: { message, created } }. A retry with the same
+   * clientMessageId acks the original message (created: false).
+   */
+  @SubscribeMessage('message:send')
+  async handleSend(
+    @ConnectedSocket() client: ChatSocket,
+    @MessageBody() body: unknown,
+  ): Promise<Ack> {
+    const requestId = ChatService.requestId();
+    try {
+      const { conversationId, ...rest } = (body ?? {}) as Record<
+        string,
+        unknown
+      >;
+      if (typeof conversationId !== 'string' || !UUID.test(conversationId)) {
+        return fail(ErrorCode.CONVERSATION_NOT_FOUND);
+      }
+      const dto = plainToInstance(SendMessageDto, rest);
+      const errors = await validate(dto, {
+        whitelist: true,
+        forbidNonWhitelisted: true,
+      });
+      if (errors.length) {
+        const fields: Record<string, string> = {};
+        for (const e of errors)
+          fields[e.property] =
+            Object.values(e.constraints ?? {})[0] ?? 'Invalid value.';
+        return fail(ErrorCode.VALIDATION_FAILED, undefined, { fields });
+      }
+      const res = await this.chat.sendMessage(
+        conversationId,
+        client.data.userId,
+        dto,
+        { via: 'socket', requestId },
+      );
+      // Sending ends the typing indicator.
+      const key = `${conversationId}:${client.data.userId}`;
+      if (this.presence.stopTyping(key)) {
+        const peer = this.peerCache.get(key)?.peer;
+        if (peer)
+          this.emitTyping(peer, conversationId, client.data.userId, false);
+      }
+      return { ok: true, data: res };
+    } catch (e) {
+      return errorAck(e, this.logger, requestId);
     }
   }
 
-  private getOnlineUserIds(): string[] {
-    return Array.from(this.onlineUsers.keys());
+  /** { conversationId, seq }: everything up to seq reached this device. */
+  @SubscribeMessage('message:delivered')
+  async handleDelivered(
+    @ConnectedSocket() client: ChatSocket,
+    @MessageBody() body: { conversationId?: unknown; seq?: unknown },
+  ): Promise<Ack> {
+    try {
+      const seq = Number(body?.seq);
+      if (!isUuid(body?.conversationId) || !Number.isInteger(seq) || seq < 0)
+        return fail(ErrorCode.VALIDATION_FAILED);
+      await this.chat.markDelivered(
+        body.conversationId,
+        client.data.userId,
+        seq,
+      );
+      return { ok: true, data: null };
+    } catch (e) {
+      return errorAck(e, this.logger);
+    }
   }
+
+  /** { conversationId, upToSeq? } -> same as POST /chat/conversations/:id/read. */
+  @SubscribeMessage('message:read')
+  async handleRead(
+    @ConnectedSocket() client: ChatSocket,
+    @MessageBody() body: { conversationId?: unknown; upToSeq?: unknown },
+  ): Promise<Ack> {
+    try {
+      if (!isUuid(body?.conversationId))
+        return fail(ErrorCode.CONVERSATION_NOT_FOUND);
+      const up =
+        body.upToSeq === undefined || body.upToSeq === null
+          ? undefined
+          : Number(body.upToSeq);
+      if (up !== undefined && (!Number.isInteger(up) || up < 0))
+        return fail(ErrorCode.VALIDATION_FAILED);
+      return {
+        ok: true,
+        data: await this.chat.markRead(
+          body.conversationId,
+          client.data.userId,
+          up,
+        ),
+      };
+    } catch (e) {
+      return errorAck(e, this.logger);
+    }
+  }
+
+  /**
+   * { conversationId, isTyping }. Send every ~3 s while typing; the
+   * indicator expires 5 s after the last event. Nothing is stored.
+   */
+  @SubscribeMessage('typing')
+  async handleTyping(
+    @ConnectedSocket() client: ChatSocket,
+    @MessageBody() body: { conversationId?: unknown; isTyping?: unknown },
+  ): Promise<Ack> {
+    if (!isUuid(body?.conversationId))
+      return fail(ErrorCode.CONVERSATION_NOT_FOUND);
+    const conversationId = body.conversationId;
+    const userId = client.data.userId;
+    const peer = await this.peer(conversationId, userId);
+    if (!peer) return fail(ErrorCode.CONVERSATION_NOT_FOUND);
+    const key = `${conversationId}:${userId}`;
+    if (body.isTyping === false) {
+      if (this.presence.stopTyping(key))
+        this.emitTyping(peer, conversationId, userId, false);
+    } else {
+      this.presence.startTyping(key, () =>
+        this.emitTyping(peer, conversationId, userId, false),
+      );
+      this.emitTyping(peer, conversationId, userId, true);
+    }
+    return { ok: true, data: null };
+  }
+
+  /**
+   * { userIds } (up to 100): presence for people you chat with who allow it.
+   * The socket then gets `presence` events for them until it unsubscribes.
+   */
+  @SubscribeMessage('presence:subscribe')
+  async handlePresenceSubscribe(
+    @ConnectedSocket() client: ChatSocket,
+    @MessageBody() body: { userIds?: unknown },
+  ): Promise<Ack> {
+    try {
+      const ids = Array.isArray(body?.userIds)
+        ? [...new Set(body.userIds.filter(isUuid))].slice(0, 100)
+        : [];
+      const visible = await this.chat.presenceVisibleTo(
+        client.data.userId,
+        ids,
+      );
+      const data = await Promise.all(
+        visible.map(async (v) => {
+          await client.join(presenceRoom(v.userId));
+          return {
+            userId: v.userId,
+            online: await this.isOnline(v.userId),
+            lastActiveAt: v.lastActiveAt,
+          };
+        }),
+      );
+      return { ok: true, data };
+    } catch (e) {
+      return errorAck(e, this.logger);
+    }
+  }
+
+  @SubscribeMessage('presence:unsubscribe')
+  async handlePresenceUnsubscribe(
+    @ConnectedSocket() client: ChatSocket,
+    @MessageBody() body: { userIds?: unknown },
+  ): Promise<Ack> {
+    const ids = Array.isArray(body?.userIds) ? body.userIds.filter(isUuid) : [];
+    await Promise.all(ids.map((id) => client.leave(presenceRoom(id))));
+    return { ok: true, data: null };
+  }
+
+  /** App-level heartbeat (Socket.IO also pings every 25 s): returns server time. */
+  @SubscribeMessage('heartbeat')
+  handleHeartbeat(): Ack {
+    return { ok: true, data: { serverTime: new Date().toISOString() } };
+  }
+
+  // ─── server -> client ───────────────────────────────────────────────
+
+  /**
+   * message:new to every participant's devices. The recipient's ack marks
+   * the message delivered (and gives delivery latency). No ack from any of
+   * their devices within 10 s (or no devices at all) means offline: the
+   * notifier creates the in-app notification (and push / email digest).
+   */
+  private deliver(e: ChatMessageEvent) {
+    if (!this.server) return;
+    const m = e.message;
+    for (const p of e.participants) {
+      this.server.to(userRoom(p.userId)).emit('conversation:updated', {
+        id: m.conversationId,
+        lastSeq: m.seq,
+        unreadCount: p.unreadCount,
+        updatedAt: m.createdAt,
+        lastMessage: {
+          id: m.id,
+          seq: m.seq,
+          text: m.text,
+          type: m.type,
+          senderId: m.senderId,
+          hasAttachments: m.attachments.length > 0,
+          deleted: false,
+          createdAt: m.createdAt,
+        },
+      });
+      if (p.userId === m.senderId) {
+        // The sender's other devices (the sending one dedupes by clientMessageId).
+        this.server.to(userRoom(p.userId)).emit('message:new', m);
+        continue;
+      }
+      this.server
+        .to(userRoom(p.userId))
+        .timeout(DELIVERY_ACK_TIMEOUT_MS)
+        .emit('message:new', m, (_err: Error | null, acks: unknown[]) => {
+          if (acks?.length) {
+            chatMetrics.delivered(Date.now() - e.savedAt);
+            this.chat
+              .markDelivered(m.conversationId, p.userId, m.seq)
+              .catch(() => undefined);
+          } else {
+            this.notifier
+              .messageWhileOffline(p.userId, m, p.muted)
+              .catch((err: Error) =>
+                writeJson(
+                  'error',
+                  'chat.notify failed',
+                  { user: hashUserId(p.userId), error: err.message },
+                  'Chat',
+                ),
+              );
+          }
+        });
+      this.chat
+        .emitUnread(p.userId, m.conversationId, p.unreadCount)
+        .catch(() => undefined);
+    }
+  }
+
+  private emitTyping(
+    toUserId: string,
+    conversationId: string,
+    userId: string,
+    isTyping: boolean,
+  ) {
+    this.server?.to(userRoom(toUserId)).emit('typing', {
+      conversationId,
+      userId,
+      isTyping,
+      expiresInMs: isTyping ? 5000 : 0,
+    });
+  }
+
+  private async peer(
+    conversationId: string,
+    userId: string,
+  ): Promise<string | null> {
+    const key = `${conversationId}:${userId}`;
+    const hit = this.peerCache.get(key);
+    if (hit && Date.now() - hit.at < 30_000) return hit.peer;
+    const peer = await this.chat.peerFor(conversationId, userId);
+    if (this.peerCache.size > 10_000) this.peerCache.clear();
+    this.peerCache.set(key, { peer, at: Date.now() });
+    return peer;
+  }
+
+  /** Local first; across instances through the adapter. */
+  async isOnline(userId: string): Promise<boolean> {
+    if (this.presence.isOnline(userId)) return true;
+    const sockets = await this.server.in(userRoom(userId)).fetchSockets();
+    return sockets.length > 0;
+  }
+}
+
+function isUuid(v: unknown): v is string {
+  return typeof v === 'string' && UUID.test(v);
+}
+
+function extractToken(client: Socket): string | null {
+  const authHeader = client.handshake.headers?.authorization;
+  if (authHeader?.startsWith('Bearer ')) return authHeader.slice(7);
+  const t =
+    (client.handshake.auth as { token?: unknown } | undefined)?.token ??
+    client.handshake.query?.token;
+  return typeof t === 'string' && t ? t.replace(/^Bearer /, '') : null;
+}
+
+function fail(
+  code: ErrorCode,
+  message?: string,
+  extra: { fields?: Record<string, string>; retryAfterSeconds?: number } = {},
+): Ack {
+  return {
+    ok: false,
+    error: { code, message: message ?? DEFAULT_MESSAGES[code], ...extra },
+  };
+}
+
+/** AppError -> its public code/message; anything else -> SERVER_ERROR (logged). */
+function errorAck(e: unknown, logger: Logger, requestId?: string): Ack {
+  const res = (e as { getResponse?: () => unknown }).getResponse?.() as
+    | {
+        code?: string;
+        message?: string;
+        fields?: Record<string, string>;
+        retryAfterSeconds?: number;
+      }
+    | undefined;
+  if (res?.code) {
+    return {
+      ok: false,
+      error: {
+        code: res.code,
+        message: res.message ?? 'Something went wrong.',
+        ...(res.fields ? { fields: res.fields } : {}),
+        ...(res.retryAfterSeconds
+          ? { retryAfterSeconds: res.retryAfterSeconds }
+          : {}),
+      },
+    };
+  }
+  logger.error(
+    `Socket handler failed${requestId ? ` (${requestId})` : ''}: ${(e as Error).message}`,
+  );
+  return fail(ErrorCode.SERVER_ERROR);
 }

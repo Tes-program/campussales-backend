@@ -1,36 +1,90 @@
-import { IsString, IsOptional, IsIn, IsUUID, MaxLength } from 'class-validator';
-import { Transform } from 'class-transformer';
+import {
+  IsString,
+  IsOptional,
+  IsUUID,
+  IsArray,
+  ArrayMaxSize,
+  ValidateNested,
+  Matches,
+  MaxLength,
+} from 'class-validator';
+import { Type } from 'class-transformer';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { MessageType } from '../enums/chat.enums';
 
-export class SendMessageDto {
-  @ApiProperty({ description: 'Message content (trimmed)', maxLength: 1000 })
-  @IsString({ message: 'Type a message.' })
-  @MaxLength(1000, { message: 'Messages can be up to 1000 characters.' })
-  content: string;
-
-  @ApiPropertyOptional({ enum: MessageType, default: MessageType.TEXT })
-  @IsOptional()
-  @Transform(({ value }: { value: unknown }) =>
-    typeof value === 'string' ? value.toLowerCase() : value,
-  )
-  @IsIn([MessageType.TEXT, MessageType.IMAGE, MessageType.FILE], {
-    message: 'Choose text, image or file.',
+export class AttachmentInputDto {
+  @ApiProperty({
+    description:
+      'Cloudinary URL from a completed signed upload with kind "chat" (JPEG, PNG or WebP, up to 3 MB).',
   })
-  type?: MessageType;
+  @IsString()
+  @MaxLength(500)
+  url: string;
+}
 
-  @ApiPropertyOptional({ description: 'URL of attached media (from uploads)' })
+/**
+ * POST /chat/conversations/:id/messages and the `message:send` socket event.
+ * Only the conversation id (in the path) and the token are needed: the
+ * server knows the other participant. Length and content rules are checked
+ * in ChatService so REST and sockets return the same error codes.
+ */
+export class SendMessageDto {
+  @ApiPropertyOptional({
+    description:
+      'Client-generated id (e.g. a UUID). Sending again with the same id returns the same message instead of a duplicate.',
+    maxLength: 64,
+  })
   @IsOptional()
   @IsString()
-  attachmentUrl?: string;
+  @Matches(/^[A-Za-z0-9_.:-]{1,64}$/, {
+    message: 'clientMessageId must be 1 to 64 letters, numbers, _ . : or -.',
+  })
+  clientMessageId?: string;
+
+  @ApiPropertyOptional({
+    description: 'Message text, trimmed, 1 to 1000 characters',
+    maxLength: 1000,
+  })
+  @IsOptional()
+  @IsString({ message: 'Type a message.' })
+  text?: string;
+
+  @ApiPropertyOptional({ type: [AttachmentInputDto], maxItems: 4 })
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(4, { message: 'Send up to 4 photos at a time.' })
+  @ValidateNested({ each: true })
+  @Type(() => AttachmentInputDto)
+  attachments?: AttachmentInputDto[];
 
   @ApiPropertyOptional({ description: 'ID of message being replied to' })
   @IsOptional()
   @IsUUID()
   replyToId?: string;
 
+  // ── legacy (one release) ──
+
+  @ApiPropertyOptional({ deprecated: true, description: 'Use `text`.' })
+  @IsOptional()
+  @IsString({ message: 'Type a message.' })
+  content?: string;
+
   @ApiPropertyOptional({
-    description: 'Product ID to attach product context to this message',
+    deprecated: true,
+    description: 'Ignored except "system", which is refused.',
+  })
+  @IsOptional()
+  @IsString()
+  type?: string;
+
+  @ApiPropertyOptional({ deprecated: true, description: 'Use `attachments`.' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  attachmentUrl?: string;
+
+  @ApiPropertyOptional({
+    deprecated: true,
+    description: 'Product shown with this message (legacy).',
   })
   @IsOptional()
   @IsUUID()

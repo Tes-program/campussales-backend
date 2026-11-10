@@ -49,6 +49,9 @@ export class CountingQueryLogger implements TypeOrmLogger {
     parameters?: unknown[],
     qr?: QueryRunner,
   ) {
+    // Expected: a concurrent retry of the same chat clientMessageId (the
+    // service returns the original message).
+    if (String(error).includes('"UQ_messages_client_id"')) return;
     // Parameters may contain personal data; the query text is enough to debug.
     this.inner.logQueryError(String(error), query, undefined, qr);
   }

@@ -87,7 +87,10 @@ export class UploadCleanupService implements OnModuleInit, OnModuleDestroy {
                               OR (u."url" <> '' AND pi."imageUrl" = u."url"))
           AND NOT EXISTS (SELECT 1 FROM "user_profiles" up
                            WHERE u."url" <> '' AND up."profilePictureUrl" = u."url")
-          -- chat photos: the client sends the image URL as the message
+          -- C1: completed chat photos are referenced by public id inside
+          -- messages.attachments; they are never cleaned up.
+          AND NOT (u."status" = 'ready' AND coalesce(u."cloudinaryPublicId", '') LIKE 'campussales/chat/%')
+          -- legacy chat photos: the client sends the image URL as the message
           -- content or attachmentUrl (equality, so Postgres can hash-join)
           AND NOT EXISTS (SELECT 1 FROM "messages" m
                            WHERE u."url" <> ''

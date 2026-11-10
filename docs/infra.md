@@ -60,6 +60,10 @@ quiet hour, preferably 02:00–05:00 WAT.
 | `UPLOAD_VERIFY_WITH_ADMIN_API` | true | Checks real size/format on `/uploads/complete`. |
 | `UPLOAD_CLEANUP_MODE` | `dry-run` | `dry-run`, `delete` or `off`. |
 | `ALERT_WEBHOOK_URL` | unset | Slack incoming webhook for alerts. |
+| `CHAT_WEB_PUSH` | unset | `true` sends Web Push for chat messages to offline users (needs the VAPID keys). |
+| `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` | unset | From `npx web-push generate-vapid-keys`. |
+| `VAPID_SUBJECT` | `mailto:support@campussales.ng` | Contact for the push services. |
+| `CHAT_EMAIL_DIGEST` | unset | `true` emails offline users about new chat messages (at most once per chat per 15 min). |
 | `ALERT_EMAIL` | falls back to `ADMIN_ALERT_EMAIL` | Alert email recipient. |
 | `UV_THREADPOOL_SIZE` | 8 | Set in main.ts. Shared by bcrypt and compression. |
 

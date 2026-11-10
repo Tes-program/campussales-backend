@@ -457,6 +457,7 @@ describe('B1 validation and data integrity (e2e)', () => {
         senderId: other.user.id,
         content: 'Is this available?',
         productId: p.id,
+        seq: 1,
       });
 
       const del = await http().delete(`/api/products/${p.id}`).set(seller.auth);

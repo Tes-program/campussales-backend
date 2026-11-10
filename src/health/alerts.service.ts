@@ -15,6 +15,7 @@ import {
 import { EmailService } from '../common/services/email.service';
 import { poolSaturated, poolStats, PoolStats } from './db-pool';
 import { checkDatabase } from './health.controller';
+import { CHAT_METRIC } from '../chat/chat-metrics';
 
 export interface AlertRule {
   key: string;
@@ -33,6 +34,9 @@ export const ALERT_THRESHOLDS = {
   emailFailures: 3, // failed sends per 15 min
   poolSaturatedChecks: 3, // consecutive minutes with requests waiting for a connection
   dbDownChecks: 2, // consecutive failed readiness checks
+  chatFailureRate: 0.02, // > 2% of chat sends failing (server errors) ...
+  chatFailureWindowMs: 5 * 60_000, // ... over 5 minutes
+  chatFailureMinSends: 50,
   repeatAfterMs: 30 * 60_000, // re-alert while still firing
 } as const;
 
@@ -87,6 +91,22 @@ export function evaluateAlerts(
     out.push({
       key: 'email_failures',
       message: `${email} emails failed to send in the last 15 minutes. Check the SMTP provider.`,
+    });
+  }
+  const chatSent = m.countSince(CHAT_METRIC.sent, T.chatFailureWindowMs, now);
+  const chatFailed = m.countSince(
+    CHAT_METRIC.failed,
+    T.chatFailureWindowMs,
+    now,
+  );
+  const chatTotal = chatSent + chatFailed;
+  if (
+    chatTotal >= T.chatFailureMinSends &&
+    chatFailed / chatTotal > T.chatFailureRate
+  ) {
+    out.push({
+      key: 'chat_send_failures',
+      message: `${((chatFailed / chatTotal) * 100).toFixed(1)}% of chat sends failed in the last 5 minutes (${chatFailed}/${chatTotal}). Check the logs for chat.send errors.`,
     });
   }
   if (state.poolSaturatedStreak >= T.poolSaturatedChecks && state.pool) {

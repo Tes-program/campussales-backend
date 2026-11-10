@@ -25,6 +25,7 @@ import {
 } from '../uploads/upload-cleanup.service';
 import { AlertsService } from './alerts.service';
 import { poolStats } from './db-pool';
+import { chatMetrics } from '../chat/chat-metrics';
 
 @ApiTags('Admin')
 @ApiBearerAuth()
@@ -52,6 +53,7 @@ export class AdminOpsController {
       routes: metrics.byRoute(window),
       pool: poolStats(this.ds),
       cache: this.cache.stats(),
+      chat: chatMetrics.snapshot(window),
       memoryMb: Math.round(process.memoryUsage().rss / 1048576),
       uptimeSeconds: Math.round(process.uptime()),
     };

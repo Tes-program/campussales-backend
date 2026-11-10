@@ -116,6 +116,10 @@ export class User {
   @Column({ type: 'timestamp', nullable: true })
   lastActiveAt?: Date | null;
 
+  /** C1: others may see when this person is online / last active in chat. */
+  @Column({ default: true })
+  chatPresenceVisible: boolean;
+
   /** Settings > "Share usage data". Product analytics are dropped when false. */
   @Column({ type: 'boolean', default: true })
   shareUsageData: boolean;

@@ -27,6 +27,8 @@ export const DEFAULT_MESSAGES: Record<ErrorCode, string> = {
     'This is taking longer than it should. Please check your connection and try again.',
   [ErrorCode.TERMS_VERSION_MISMATCH]:
     'We updated our Terms. Please review them and try again.',
+  [ErrorCode.TOO_LONG]: 'Messages can be up to 1000 characters.',
+  [ErrorCode.CONVERSATION_NOT_FOUND]: "We couldn't find this chat.",
   [ErrorCode.SERVER_ERROR]:
     'Something went wrong on our side. Please try again in a moment.',
 };

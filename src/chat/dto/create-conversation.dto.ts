@@ -9,7 +9,7 @@ export class CreateConversationDto {
 
   @ApiPropertyOptional({
     description:
-      'Product ID — only used to attach product context to the initial message. Does NOT create a separate conversation per product.',
+      'The listing this chat is about. One conversation per (buyer, seller, product); without it, the general chat between the two people.',
   })
   @IsOptional()
   @IsUUID()
@@ -17,7 +17,8 @@ export class CreateConversationDto {
 
   @ApiPropertyOptional({
     enum: ConversationType,
-    default: ConversationType.DIRECT,
+    deprecated: true,
+    description: 'Ignored: derived from productId.',
   })
   @IsOptional()
   @IsEnum(ConversationType)

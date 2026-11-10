@@ -1,20 +1,26 @@
 import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { JwtModule } from '@nestjs/jwt';
-import { BullModule } from '@nestjs/bullmq';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { ChatController } from './chat.controller';
 import { ChatService } from './chat.service';
 import { ChatGateway } from './chat.gateway';
-import { ChatProcessor } from './chat.processor';
+import { ChatPresence } from './chat-presence';
+import { ChatNotifier } from './chat-notifier';
 import { Conversation } from './entities/conversation.entity';
 import { ConversationParticipant } from './entities/conversation-participant.entity';
 import { Message } from './entities/message.entity';
+import { MessageHide } from './entities/message-hide.entity';
 import { NotificationsModule } from '../notifications/notifications.module';
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([Conversation, ConversationParticipant, Message]),
+    TypeOrmModule.forFeature([
+      Conversation,
+      ConversationParticipant,
+      Message,
+      MessageHide,
+    ]),
     JwtModule.registerAsync({
       imports: [ConfigModule],
       inject: [ConfigService],
@@ -22,13 +28,10 @@ import { NotificationsModule } from '../notifications/notifications.module';
         secret: configService.get<string>('JWT_SECRET'),
       }),
     }),
-    BullModule.registerQueue({
-      name: 'chat',
-    }),
     NotificationsModule,
   ],
   controllers: [ChatController],
-  providers: [ChatService, ChatGateway, ChatProcessor],
+  providers: [ChatService, ChatGateway, ChatPresence, ChatNotifier],
   exports: [ChatService, ChatGateway],
 })
 export class ChatModule {}

@@ -5,12 +5,17 @@ import {
   CreateDateColumn,
   UpdateDateColumn,
   OneToMany,
+  Index,
 } from 'typeorm';
 import { ConversationType } from '../enums/chat.enums';
 import { ConversationParticipant } from './conversation-participant.entity';
 import { Message } from './message.entity';
+import { bigintNumber } from './bigint-number';
 
 @Entity('conversations')
+@Index('UQ_conversations_pair_product', { synchronize: false })
+@Index('IDX_conversations_pair', { synchronize: false })
+@Index('IDX_conversations_product', { synchronize: false })
 export class Conversation {
   @PrimaryGeneratedColumn('uuid')
   id: string;
@@ -34,6 +39,20 @@ export class Conversation {
 
   @Column({ type: 'integer', nullable: true })
   productPrice?: number | null;
+
+  /** The participant pair, sorted (C1): one conversation per (pair, product). */
+  @Column({ type: 'uuid', nullable: true })
+  userLowId?: string | null;
+
+  @Column({ type: 'uuid', nullable: true })
+  userHighId?: string | null;
+
+  /** Last allocated message sequence number (C1). */
+  @Column({ type: 'bigint', default: 0, transformer: bigintNumber })
+  lastSeq: number;
+
+  @Column({ type: 'timestamp', nullable: true })
+  lastMessageAt?: Date | null;
 
   /** Set when the item is sold or deleted. Messaging still works. */
   @Column({ type: 'timestamp', nullable: true })

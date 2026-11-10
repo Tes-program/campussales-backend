@@ -26,7 +26,8 @@ function countBusinessFailure(route: string, status: number) {
     metrics.count(METRIC.onboardingFailed);
 }
 
-function logRequests(): boolean {
+/** LOG_REQUESTS, default on outside tests. Shared with chat.send logs. */
+export function logRequests(): boolean {
   const v = process.env.LOG_REQUESTS;
   if (v !== undefined) return v === 'true';
   return process.env.NODE_ENV !== 'test';
