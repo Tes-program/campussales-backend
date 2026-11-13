@@ -658,7 +658,7 @@ export class ChatService {
           ? this.ds.query<LegacyProduct[]>(
               `SELECT p.id, p.title, p.price::int AS price,
                     COALESCE((SELECT json_agg(json_build_object('id', i.id, 'imageUrl', i."imageUrl", 'isPrimary', i."isPrimary")
-                                              ORDER BY i."isPrimary" DESC, i."sortOrder")
+                                              ORDER BY i."unavailableAt" IS NOT NULL, i."isPrimary" DESC, i."sortOrder")
                                 FROM "product_images" i WHERE i."productId" = p.id), '[]') AS images
                FROM "products" p WHERE p.id = ANY($1::uuid[])`,
               [productIds],
@@ -941,7 +941,7 @@ export class ChatService {
     >(
       `SELECT p.id, p."sellerId", p.title, p.price::int AS price,
               (SELECT i."imageUrl" FROM "product_images" i WHERE i."productId" = p.id
-                ORDER BY i."isPrimary" DESC, i."sortOrder" LIMIT 1) AS cover
+                ORDER BY i."unavailableAt" IS NOT NULL, i."isPrimary" DESC, i."sortOrder" LIMIT 1) AS cover
          FROM "products" p WHERE p.id = $1 AND p."deletedAt" IS NULL`,
       [productId],
     );

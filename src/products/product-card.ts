@@ -34,12 +34,18 @@ export function priceDropSummary(p: Pick<Product, 'price' | 'priceHistory'>): {
   return { previousPrice: null, droppedAt: null };
 }
 
-/** Cover first (isPrimary), then sortOrder. */
+/**
+ * Cover first (isPrimary), then sortOrder. Images whose file is missing
+ * (`unavailable: true`) go last so the cover is always a working photo when
+ * the listing has one; apps show a placeholder for them.
+ */
 export function orderedImages(images: ProductImage[] | undefined) {
   return [...(images ?? [])]
     .sort(
       (a, b) =>
-        Number(b.isPrimary) - Number(a.isPrimary) || a.sortOrder - b.sortOrder,
+        Number(!!a.unavailableAt) - Number(!!b.unavailableAt) ||
+        Number(b.isPrimary) - Number(a.isPrimary) ||
+        a.sortOrder - b.sortOrder,
     )
     .map((i) => {
       const ref = i.publicId ? i : parseCloudinaryUrl(i.imageUrl);
@@ -52,6 +58,7 @@ export function orderedImages(images: ProductImage[] | undefined) {
         version: ref?.version ?? null,
         isPrimary: i.isPrimary,
         sortOrder: i.sortOrder,
+        unavailable: !!i.unavailableAt,
       };
     });
 }

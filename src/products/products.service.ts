@@ -5,7 +5,14 @@ import { Injectable, Logger } from '@nestjs/common';
 import { InjectDataSource, InjectRepository } from '@nestjs/typeorm';
 import { plainToInstance } from 'class-transformer';
 import { validate } from 'class-validator';
-import { DataSource, EntityManager, In, Repository } from 'typeorm';
+import {
+  DataSource,
+  EntityManager,
+  In,
+  IsNull,
+  Not,
+  Repository,
+} from 'typeorm';
 import { applyStatus, Product, ProductStatus } from './entities/product.entity';
 import { ProductImage } from './entities/product-image.entity';
 import { Category } from './entities/category.entity';
@@ -608,6 +615,16 @@ export class ProductsService {
     productId: string,
     urls: string[],
   ): Promise<ProductImage[]> {
+    // A photo already marked unavailable (file missing) stays marked when the
+    // seller saves the listing again with the same URL.
+    const missing = new Map(
+      (
+        await manager.find(ProductImage, {
+          where: { productId, unavailableAt: Not(IsNull()) },
+          select: ['imageUrl', 'unavailableAt'],
+        })
+      ).map((i) => [i.imageUrl, i.unavailableAt]),
+    );
     await manager.delete(ProductImage, { productId });
     const images = urls.map((imageUrl, index) => {
       const ref = parseCloudinaryUrl(imageUrl);
@@ -616,6 +633,7 @@ export class ProductsService {
         imageUrl,
         publicId: ref?.publicId ?? null,
         version: ref?.version ?? null,
+        unavailableAt: missing.get(imageUrl) ?? null,
         isPrimary: index === 0,
         sortOrder: index,
       });

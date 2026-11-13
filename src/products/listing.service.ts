@@ -477,7 +477,8 @@ export class ListingService {
               u."id" AS "uId", u."name" AS "uName", u."code" AS "uCode",
               (SELECT coalesce(json_agg(json_build_object(
                         'id', i."id", 'imageUrl', i."imageUrl", 'isPrimary', i."isPrimary",
-                        'sortOrder', i."sortOrder", 'publicId', i."publicId", 'version', i."version")), '[]'::json)
+                        'sortOrder', i."sortOrder", 'publicId', i."publicId", 'version', i."version",
+                        'unavailableAt', i."unavailableAt")), '[]'::json)
                  FROM "product_images" i WHERE i."productId" = p."id") AS "images"
               ${viewer ? `, EXISTS (SELECT 1 FROM "wishlists" w WHERE w."productId" = p."id" AND w."userId" = $2) AS "isWishlisted"` : ''}
          FROM "products" p

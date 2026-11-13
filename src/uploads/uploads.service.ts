@@ -10,11 +10,15 @@ import { Repository } from 'typeorm';
 import { ConfigService } from '@nestjs/config';
 import { Upload, UploadType } from './entities/upload.entitiy';
 import { v2 as cloudinary } from 'cloudinary';
-import { unlink } from 'fs/promises';
+import { open, unlink } from 'fs/promises';
 import { join } from 'path';
 import { existsSync } from 'fs';
 import { getBaseUrl } from './storage.config';
 import { UsersService } from '../users/user.service';
+import { CloudinaryClient } from './cloudinary.client';
+import { IMAGE_HEADER_BYTES, imageSize } from './image-size';
+import { isTooSmall, UPLOAD_RULES } from './upload-rules';
+import { ValidationFailed } from '../common/errors/app-errors';
 
 @Injectable()
 export class UploadsService {
@@ -25,7 +29,68 @@ export class UploadsService {
     private uploadsRepository: Repository<Upload>,
     private configService: ConfigService,
     private usersService: UsersService,
+    private cloud: CloudinaryClient,
   ) {}
+
+  /**
+   * Legacy multipart listing photos: rejects the request when any photo is
+   * under 400x300 and removes every file it stored, so nothing is left
+   * behind. A photo whose size can't be read is let through.
+   */
+  async assertListingPhotoSizes(files: Express.Multer.File[]): Promise<void> {
+    const sizes = await Promise.all(files.map((f) => this.storedSize(f)));
+    if (!sizes.some((s) => s && isTooSmall(s.width, s.height))) return;
+    await Promise.all(files.map((f) => this.removeStoredFile(f)));
+    throw new ValidationFailed(
+      { images: UPLOAD_RULES.tooSmallMessage },
+      UPLOAD_RULES.tooSmallMessage,
+    );
+  }
+
+  private isCloudinary(): boolean {
+    return (this.configService.get('STORAGE_TYPE') || 'local') === 'cloudinary';
+  }
+
+  private async storedSize(
+    file: Express.Multer.File,
+  ): Promise<{ width: number; height: number } | null> {
+    try {
+      if (this.isCloudinary()) {
+        const r = await this.cloud.resource(file.filename);
+        return r ? { width: r.width, height: r.height } : null;
+      }
+      const fh = await open(
+        file.path ?? join(process.cwd(), 'uploads', file.filename),
+        'r',
+      );
+      try {
+        const buf = Buffer.alloc(IMAGE_HEADER_BYTES);
+        const { bytesRead } = await fh.read(buf, 0, buf.length, 0);
+        return imageSize(buf.subarray(0, bytesRead));
+      } finally {
+        await fh.close();
+      }
+    } catch (e) {
+      this.logger.warn(
+        `Could not read the size of ${file.filename}: ${(e as Error).message}`,
+      );
+      return null;
+    }
+  }
+
+  private async removeStoredFile(file: Express.Multer.File): Promise<void> {
+    try {
+      if (this.isCloudinary()) await this.cloud.destroy([file.filename]);
+      else
+        await unlink(
+          file.path ?? join(process.cwd(), 'uploads', file.filename),
+        );
+    } catch (e) {
+      this.logger.warn(
+        `Could not remove rejected upload ${file.filename}: ${(e as Error).message}`,
+      );
+    }
+  }
 
   /**
    * Save uploaded file metadata to database

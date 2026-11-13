@@ -79,7 +79,7 @@ export class ShareController {
         excerpt(p.description) || `${p.title} for ${price} on CampusSales.`,
       url,
       redirect: url,
-      image: orderedImages(p.images)[0]?.imageUrl,
+      image: orderedImages(p.images).find((i) => !i.unavailable)?.imageUrl,
       price: Number(p.price),
     });
   }

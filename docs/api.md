@@ -342,6 +342,13 @@ real old values so changes can be reversed.
 Test listings (e.g. "QA Test") are hidden, not deleted. Ask the owner before
 deleting anything.
 
+### Product photos
+
+| Command | What it does |
+| --- | --- |
+| `npm run audit:uploads` | Read-only. For every photo of a live listing: does the file exist (uploads folder, or Cloudinary via a read-only Admin API listing), its size, and whether it is `missing`, `too_small` (under 400x300 either way) or `extreme_aspect` (wider than 2:1 or taller than 1:2). Writes `images.csv` (one row per photo; `issues` empty when fine) and `summary.json`. Options: `--uploads-dir=<path>` (default `./uploads`), `--local-hosts=a.com,b.com` (extra hosts whose `/uploads/<file>` URLs are local; `BACKEND_URL` and localhost are always local), `--cloudinary=off`. Photos it can't check (another Cloudinary account, external hosts, no credentials) are `exists = unknown`, never `missing`. |
+| `npm run fix:missing-images` | **Dry run** by default. With `-- --apply`: sets `product_images.unavailableAt` on photos confirmed missing, sends each affected seller one in-app notification per listing, and un-marks photos whose file is back. **Never deletes a listing or a photo.** Re-running sends nothing new. Refuses if more than half the checked photos look missing (wrong folder/account) unless `--allow-mass`; non-local hosts need `--confirm-host=<host>`. Needs the image data integrity migration. |
+
 ---
 
 ## 7. Deploy order (Railway)
@@ -739,6 +746,20 @@ Over 3 MB → `400 VALIDATION_FAILED`, `fields.image = "This photo is over 3 MB�
 items now include `publicId` and `version` per image; build responsive URLs as
 `https://res.cloudinary.com/<cloud>/image/upload/f_auto,q_auto,c_limit,w_<n>/v<version>/<publicId>`
 (`config.cloudinaryCloudName` in bootstrap). `imageUrl` is unchanged.
+
+Listing photos under 400x300 (either orientation: a 300x400 portrait is fine)
+→ `400 VALIDATION_FAILED`, message and `fields.image` = `"This photo is too
+small. Use one at least 400x300."` (the legacy `POST /api/uploads/product-images`
+uses `fields.images` and rejects the whole request). The rejected file is
+deleted. Avatars and chat photos are not size-checked. Check
+`width`/`height` on the phone first to save the upload.
+
+Images whose file has gone missing come back with **`unavailable: true`**
+(every other image has `false`) and are ordered last, so `images[0]` is a
+working photo when the listing has one. Show a placeholder for them; the
+seller gets a `listing` notification linked to the listing asking for new
+photos. The flag stays when the seller saves the listing with the same URL and
+clears when they replace the photo.
 
 ### Product analytics
 

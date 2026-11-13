@@ -11,7 +11,7 @@ import { ErrorCode } from '../common/errors/error-codes';
 import { CloudinaryClient } from './cloudinary.client';
 import { cloudinaryOriginalUrl, cloudinaryUrl } from './cloudinary-url';
 import { Upload, UploadType } from './entities/upload.entitiy';
-import { UPLOAD_RULES } from './upload-rules';
+import { isTooSmall, UPLOAD_RULES } from './upload-rules';
 import { UsersService } from '../users/user.service';
 
 export type UploadKind = 'product' | 'avatar' | 'chat';
@@ -203,6 +203,22 @@ export class SignedUploadsService {
       throw new ValidationFailed(
         { image: UPLOAD_RULES.tooLargeMessage },
         UPLOAD_RULES.tooLargeMessage,
+      );
+    }
+    // Listing photos must be at least 400x300. Avatars and chat photos are
+    // exempt (cropped thumbnails, screenshots). When neither Cloudinary nor
+    // the signed response gives a size, the photo is let through.
+    if (
+      dto.publicId.startsWith(FOLDERS.product + '/') &&
+      info.width &&
+      info.height &&
+      isTooSmall(info.width, info.height)
+    ) {
+      await this.cloud.destroy([dto.publicId]).catch(() => undefined);
+      await this.uploads.update({ id: row.id }, { status: 'deleted' });
+      throw new ValidationFailed(
+        { image: UPLOAD_RULES.tooSmallMessage },
+        UPLOAD_RULES.tooSmallMessage,
       );
     }
     const isChat = dto.publicId.startsWith(UPLOAD_RULES.chatFolder);

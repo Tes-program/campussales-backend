@@ -71,7 +71,8 @@ export class UploadsController {
   })
   @ApiResponse({
     status: 400,
-    description: 'VALIDATION_FAILED (too large, wrong format, bad signature)',
+    description:
+      'VALIDATION_FAILED (too large, under 400x300, wrong format, bad signature)',
   })
   complete(@CurrentUser() user: User, @Body() dto: CompleteUploadDto) {
     return this.signed.complete(user.id, dto);
@@ -101,7 +102,11 @@ export class UploadsController {
     description: 'Images uploaded successfully',
     type: MultipleUploadResponseDto,
   })
-  @ApiResponse({ status: 400, description: 'Invalid file or too many files' })
+  @ApiResponse({
+    status: 400,
+    description:
+      'Invalid file, too many files, or a photo under 400x300 (VALIDATION_FAILED)',
+  })
   async uploadProductImages(
     @CurrentUser() user: User,
     @UploadedFiles() files: Express.Multer.File[],
@@ -111,6 +116,7 @@ export class UploadsController {
     }
 
     this.logger.log(`User ${user.id} uploading ${files.length} product images`);
+    await this.uploadsService.assertListingPhotoSizes(files);
 
     const uploads = await this.uploadsService.saveMultipleUploads(
       user.id,

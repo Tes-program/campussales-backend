@@ -25,4 +25,31 @@ export const UPLOAD_RULES = {
   chatFolder: 'campussales/chat/',
   tooLargeMessage:
     'This photo is over 3 MB. Choose a smaller photo or take a new one with your camera.',
+  /**
+   * Smallest listing photo: 400x300 in either orientation (a 300x400
+   * portrait is as big as a 400x300 landscape), so the short side must be
+   * at least 300 and the long side at least 400.
+   */
+  minLongSide: 400,
+  minShortSide: 300,
+  tooSmallMessage: 'This photo is too small. Use one at least 400x300.',
+  /** Wider than 2:1 or taller than 1:2 is flagged by the audit. */
+  maxAspectRatio: 2,
 };
+
+/** True when a photo is under 400x300 (either orientation). */
+export function isTooSmall(width: number, height: number): boolean {
+  return (
+    Math.max(width, height) < UPLOAD_RULES.minLongSide ||
+    Math.min(width, height) < UPLOAD_RULES.minShortSide
+  );
+}
+
+/** True when a photo is wider than 2:1 or taller than 1:2. */
+export function isExtremeAspect(width: number, height: number): boolean {
+  if (width <= 0 || height <= 0) return false;
+  return (
+    Math.max(width, height) / Math.min(width, height) >
+    UPLOAD_RULES.maxAspectRatio
+  );
+}

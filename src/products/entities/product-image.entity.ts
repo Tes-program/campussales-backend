@@ -27,6 +27,10 @@ export class ProductImage {
   @Column({ type: 'int', nullable: true })
   version?: number | null;
 
+  /** Set when the file is missing (scripts/mark-missing-images.js). */
+  @Column({ type: 'timestamptz', nullable: true })
+  unavailableAt?: Date | null;
+
   @Column({ default: false })
   isPrimary: boolean;
 

@@ -27,6 +27,8 @@
     "seed:schools": "ts-node -r tsconfig-paths/register src/database/seeds/seed-schools.ts",
     "audit:data": "node scripts/audit-data.js",
     "fix:data": "node scripts/fix-data.js",
+    "audit:uploads": "node scripts/audit-uploads.js",
+    "fix:missing-images": "node scripts/mark-missing-images.js",
     "seed:perf": "node scripts/seed-perf.js",
     "search:misses": "node scripts/search-misses.js",
     "metrics": "node scripts/metrics.js",
